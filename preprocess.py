@@ -1,11 +1,10 @@
 import pandas as pd
 import numpy as np
 import os
-import json
 import logging
-from datetime import datetime
 from sklearn.preprocessing import LabelEncoder
-import config # Our fixed config module
+import config
+import database # Our new database module
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +24,7 @@ def calculate_stats_with_strategy(df, span=5):
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
+    # Same advanced stats logic as before
     home = df[['fixture_id', 'date', 'league_id', 'home_id', 'goals_home', 'goals_away']].copy()
     away = df[['fixture_id', 'date', 'league_id', 'away_id', 'goals_away', 'goals_home']].copy()
     
@@ -37,20 +37,15 @@ def calculate_stats_with_strategy(df, span=5):
 
     group = team_stats.groupby('team_id')
     
-    # Define weighting logic
     def apply_weighting(x):
-        if strategy == 0: # FLAT
-            return x.shift().rolling(5, min_periods=1).mean()
-        elif strategy == 1: # TEMPORAL
-            return x.shift().ewm(span=span).mean() # In pandas, EWM on sorted series handles "recent" automatically
-        elif strategy == 2: # ORDINAL
-            return x.shift().ewm(alpha=0.4).mean() # Alpha based ordinal decay
+        if strategy == 0: return x.shift().rolling(5, min_periods=1).mean()
+        elif strategy == 1: return x.shift().ewm(span=span).mean()
+        elif strategy == 2: return x.shift().ewm(alpha=0.4).mean()
 
     team_stats['ewm_goals_for'] = group['goals_for'].transform(apply_weighting)
     team_stats['ewm_goals_against'] = group['goals_against'].transform(apply_weighting)
     team_stats['ewm_goal_diff'] = group['goal_diff'].transform(apply_weighting)
     team_stats['ewm_form_points'] = group['points'].transform(apply_weighting)
-    
     team_stats['days_rest'] = group['date'].transform(lambda x: x.diff().dt.days.shift())
     
     match_stats = df[['fixture_id', 'date', 'league_id', 'venue', 'referee', 'home_id', 'away_id', 'target']].copy()
@@ -62,38 +57,34 @@ def calculate_stats_with_strategy(df, span=5):
 
     return match_stats.rename(columns={'ewm_goals_for': 'ewm_goals_for_home', 'ewm_goals_against': 'ewm_goals_against_home', 'ewm_goal_diff': 'ewm_goal_diff_home', 'ewm_form_points': 'ewm_form_points_home', 'days_rest': 'days_rest_home'})
 
-def process_fixtures(raw_fixtures):
-    if config.IS_LOCAL_TEST:
-        limit = config.get_data_limit(len(raw_fixtures))
-        logging.info(f"Local Test: Sampling {limit} matches.")
-        raw_fixtures = raw_fixtures[:limit]
+def process_matches_from_db():
+    # 1. Pull all finished matches from SQLite
+    df = database.get_all_matches_df()
+    logging.info(f"Loaded {len(df)} finished matches from Database.")
 
-    rows = []
-    for match in raw_fixtures:
-        try:
-            if match['goals']['home'] is None: continue
-            rows.append({'fixture_id': match['fixture']['id'], 'league_id': match['league']['id'], 'date': match['fixture']['date'], 'venue': match['fixture']['venue']['name'] or "Unknown", 'referee': match['fixture']['referee'] or "Unknown", 'home_id': match['teams']['home']['id'], 'away_id': match['teams']['away']['id'], 'goals_home': match['goals']['home'], 'goals_away': match['goals']['away']})
-        except: continue
-    
-    df = pd.DataFrame(rows)
+    if config.IS_LOCAL_TEST:
+        limit = config.get_data_limit(len(df))
+        logging.info(f"Local Test: Sampling {limit} matches.")
+        df = df.sample(n=limit, random_state=42)
+
+    # 2. Target Encoding
     df['target'] = df.apply(get_target, axis=1)
+    
+    # 3. Features
     df = calculate_stats_with_strategy(df)
     
+    # 4. Encoding
     for col in ['venue', 'referee', 'league_id']:
         df[col] = LabelEncoder().fit_transform(df[col].astype(str))
+        
     return df
 
 if __name__ == "__main__":
     os.makedirs(config.PROCESSED_DATA_DIR, exist_ok=True)
-    all_fixtures = []
-    if os.path.exists(config.RAW_DATA_DIR):
-        files = [f for f in os.listdir(config.RAW_DATA_DIR) if f.endswith('.json')]
-        for file in files:
-            with open(os.path.join(config.RAW_DATA_DIR, file), 'r') as f:
-                all_fixtures.extend(json.load(f).get('response', []))
-        
-        if all_fixtures:
-            df = process_fixtures(all_fixtures)
-            df.to_csv(os.path.join(config.PROCESSED_DATA_DIR, "final_train_data.csv"), index=False)
-            logging.info(f"SUCCESS: Processed {len(df)} matches.")
-    else: logging.error("No raw data found.")
+    df = process_matches_from_db()
+    if not df.empty:
+        output_path = os.path.join(config.PROCESSED_DATA_DIR, "final_train_data.csv")
+        df.to_csv(output_path, index=False)
+        logging.info(f"SUCCESS: Preprocessed {len(df)} matches. Saved to {output_path}")
+    else:
+        logging.error("No matches to process from database.")

@@ -3,8 +3,9 @@ import json
 import requests
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+import database # Our new database module
 
 # Setup Logging
 logging.basicConfig(
@@ -27,32 +28,42 @@ LEAGUES = {
     "Eredivisie": 88
 }
 
-# 6 Seasons: 2019 to 2024
 SEASONS = [2019, 2020, 2021, 2022, 2023, 2024]
 
-def save_locally(json_data, filename):
-    os.makedirs(os.path.dirname(filename), exist_ok=True)
-    with open(filename, 'w') as f:
-        json.dump(json_data, f)
-
-def fetch_league_data(league_id, season, name):
+def fetch_league_data_incremental(league_id, season, name):
+    """Only fetches data AFTER the latest match we have in DB."""
+    last_date = database.get_latest_match_date(league_id, season)
+    
     url = f"{BASE_URL}/fixtures"
     headers = {"x-apisports-key": API_KEY}
-    params = {"league": league_id, "season": season}
     
+    # Define date parameters if we have previous data
+    params = {"league": league_id, "season": season}
+    if last_date:
+        # Fetch from the day after the last match
+        start_date = (datetime.strptime(last_date[:10], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+        params["from"] = start_date
+        params["to"] = datetime.now().strftime("%Y-%m-%d")
+        
+        # Check if start_date is in the future
+        if start_date > params["to"]:
+            logging.info(f"Skipping {name} {season}: Database is already up to date.")
+            return
+
     try:
-        logging.info(f"Requesting {name} (ID: {league_id}) for Season {season}...")
+        logging.info(f"Requesting {name} (ID: {league_id}) {season} from {params.get('from', 'Beginning')}...")
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         data = response.json()
         
-        if not data.get('response'):
-            logging.warning(f"No data found for {name} {season}.")
+        matches = data.get('response', [])
+        if not matches:
+            logging.info(f"No new matches found for {name} {season}.")
             return
             
-        filename = f"data/raw/fixtures_{league_id}_{season}.json"
-        save_locally(data, filename)
-        logging.info(f"Successfully saved {len(data['response'])} matches for {name} {season}.")
+        # Save to SQLite instead of JSON files
+        saved_count = database.save_matches_to_db(matches, season)
+        logging.info(f"SUCCESS: Saved {saved_count} new matches to DB for {name} {season}.")
         
     except Exception as e:
         logging.error(f"Error fetching {name} {season}: {e}")
@@ -61,10 +72,10 @@ if __name__ == "__main__":
     if not API_KEY:
         logging.critical("FOOTBALL_API_KEY missing in .env!")
     else:
-        logging.info("Starting Massive Data Ingestion...")
+        database.init_db()
+        logging.info("Starting Incremental Data Ingestion...")
         for name, league_id in LEAGUES.items():
             for season in SEASONS:
-                fetch_league_data(league_id, season, name)
-                # Rate limit safety (adjust if you have a higher tier)
-                time.sleep(1.2) 
-        logging.info("Ingestion Task Completed.")
+                fetch_league_data_incremental(league_id, season, name)
+                time.sleep(1.2) # Rate limit
+        logging.info("Incremental Ingestion Task Completed.")
