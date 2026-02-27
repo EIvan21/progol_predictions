@@ -14,3 +14,4 @@ ordered-set
 matplotlib
 seaborn
 fpdf2
+imbalanced-learn

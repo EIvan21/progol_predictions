@@ -40,7 +40,10 @@ def generate_methodology_report():
     # DYNAMIC FILENAME
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     mode_str = "LOCAL" if config.IS_LOCAL_TEST else "PROD"
-    strat_name = ["FLAT", "TEMPORAL", "ORDINAL"][config.WEIGHT_STRATEGY]
+    
+    # Fixed indexing for Strategy 3
+    strat_names = ["FLAT", "TEMPORAL", "ORDINAL", "CONTEXTUAL"]
+    strat_name = strat_names[config.WEIGHT_STRATEGY] if config.WEIGHT_STRATEGY < len(strat_names) else "UNKNOWN"
     
     report_name = f"experiment_{mode_str}_{strat_name}_{timestamp}"
     output_path = os.path.join(config.REPORT_DIR, report_name)
