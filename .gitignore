@@ -32,3 +32,5 @@ reports/
 .venv
 .vscode/
 .idea/
+catboost_info/
+
