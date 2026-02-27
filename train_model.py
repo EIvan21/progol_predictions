@@ -41,7 +41,13 @@ def objective_xgb(trial, X, y):
 def train_progol_model(df):
     logging.info("--- 🏆 STARTING ROBUST HYPER-ENSEMBLE ---")
     
-    exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name', 'goals_home', 'goals_away', 'total_goals', 'result', 'year']
+    # Exclude text-based columns and IDs
+    exclude = [
+        'fixture_id', 'date', 'target', 'home_id', 'away_id', 
+        'home_name', 'away_name', 'status', 'league_name',
+        'goals_home', 'goals_away', 'total_goals', 'result', 'year',
+        'venue', 'referee' # Added these to fix the crash
+    ]
     features = [c for c in df.columns if c not in exclude]
     
     # 1. Smarter Cleaning: Only drop if Target is missing. 
