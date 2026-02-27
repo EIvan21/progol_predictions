@@ -22,8 +22,9 @@ def get_user_input():
     print("  [2] Random Forest (Stable & Robust)")
     print("  [3] CatBoost (Best for Categorical Data)")
     print("  [4] Neural Network (Deep Learning - Complex Interactions)")
-    model_choice = input("Choice (1, 2, 3, or 4): ")
-    model_map = {'1': 'XGBoost', '2': 'RandomForest', '3': 'CatBoost', '4': 'NeuralNetwork'}
+    print("  [5] ENSEMBLE (The Collective Brain - All of the above combined)")
+    model_choice = input("Choice (1-5): ")
+    model_map = {'1': 'XGBoost', '2': 'RandomForest', '3': 'CatBoost', '4': 'NeuralNetwork', '5': 'Ensemble'}
     model_type = model_map.get(model_choice, 'XGBoost')
 
     # 3. Feature Engineering Strategy
