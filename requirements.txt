@@ -10,9 +10,6 @@ python-dotenv
 rapidfuzz
 scipy
 ordered-set
-sqlite3
 matplotlib
 seaborn
 fpdf2
-plotly
-kaleido
