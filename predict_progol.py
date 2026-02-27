@@ -15,41 +15,36 @@ METRICS_PATH = 'models/metrics.json'
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 
-def fetch_match_stats(team_id):
+def fetch_hyper_context(match_id):
     headers = {"x-apisports-key": API_KEY}
     try:
-        url = f"{BASE_URL}/fixtures?team={team_id}&last=5&status=FT"
-        res = requests.get(url, headers=headers).json().get('response', [])
-        if not res: return 0, 0, 0, 0, 0, 0
+        res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
+        if not res.get('response'): return None
+        match = res['response'][0]
+        h_id, a_id = match['teams']['home']['id'], match['teams']['away']['id']
         
-        match_ids = [m['fixture']['id'] for m in res]
-        stats_list = []
-        
-        for fid in match_ids:
-            s_url = f"{BASE_URL}/fixtures/statistics?fixture={fid}"
-            s_res = requests.get(s_url, headers=headers).json().get('response', [])
-            if not s_res: continue
-            
-            # Find stats for our team
-            team_stats = [s for s in s_res if s['team']['id'] == team_id][0]
-            opp_stats = [s for s in s_res if s['team']['id'] != team_id][0]
-            
-            s_map = {item['type']: item['value'] for item in team_stats['statistics']}
-            o_map = {item['type']: item['value'] for item in opp_stats['statistics']}
-            
-            stats_list.append({
-                'gf': int(s_map.get('Goals', 0) or 0),
-                'ga': int(o_map.get('Goals', 0) or 0),
-                'shots': int(s_map.get('Shots on Goal', 0) or 0),
-                'poss': int(str(s_map.get('Ball Possession', "0") or "0").replace('%','')),
-                'corners': int(s_map.get('Corner Kicks', 0) or 0)
-            })
-            time.sleep(0.5) # Rate limit safety
+        def get_team_stats(team_id):
+            url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
+            data = requests.get(url, headers=headers).json().get('response', [])
+            if not data: return 0, 0, 0, 0.3
+            stats = []
+            for g in reversed(data):
+                is_h = g['teams']['home']['id'] == team_id
+                gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
+                stats.append({'gf':gf, 'ga':ga, 'win': 1 if gf>ga else 0, 'cs': 1 if ga==0 else 0})
+            df = pd.DataFrame(stats)
+            return df['gf'].mean(), df['ga'].mean(), df['cs'].mean(), df['win'].mean()
 
-        df = pd.DataFrame(stats_list).mean()
-        cs_rate = (pd.DataFrame(stats_list)['ga'] == 0).mean()
-        return df['gf'], df['ga'], df['shots'], df['poss'], df['corners'], cs_rate
-    except: return 0, 0, 0, 0, 0, 0
+        h_gf, h_ga, h_cs, h_p = get_team_stats(h_id)
+        a_gf, a_ga, a_cs, a_p = get_team_stats(a_id)
+        
+        return {
+            'league_id': match['league']['id'], 'league_ha_factor': 0.45,
+            'venue_encoded': 0.45, 'ref_encoded': 0.33,
+            'roll_gf_home': h_gf, 'roll_ga_home': h_ga, 'cs_rate_home': h_cs, 'power_score_home': h_p,
+            'roll_gf_away': a_gf, 'roll_ga_away': a_ga, 'cs_rate_away': a_cs, 'power_score_away': a_p
+        }
+    except: return None
 
 def predict_progol(match_ids):
     if not os.path.exists(METRICS_PATH): return
@@ -58,35 +53,26 @@ def predict_progol(match_ids):
     with open(SCALER_PATH, 'rb') as f: scaler = pickle.load(f)
     with open(MODEL_PATH, 'rb') as f: model = pickle.load(f)
 
-    print(f"\n{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10}")
-    print("-" * 55)
+    print(f"\n{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10} | {'PRED':<5}")
+    print("-" * 65)
     
-    headers = {"x-apisports-key": API_KEY}
     for mid in match_ids:
-        try:
-            m_res = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=headers).json()['response'][0]
-            h_id, a_id = m_res['teams']['home']['id'], m_res['teams']['away']['id']
-            
-            h_s = fetch_match_stats(h_id)
-            a_s = fetch_match_stats(a_id)
-            
-            data = {
-                'league_id': m_res['league']['id'],
-                'venue_encoded': 0.45, 'ref_encoded': 0.33, 'league_ha_factor': 0.45,
-                'roll_gf_home': h_s[0], 'roll_ga_home': h_s[1], 'roll_shots_home': h_s[2], 'roll_poss_home': h_s[3], 'roll_corners_home': h_s[4], 'cs_rate_home': h_s[5],
-                'roll_gf_away': a_s[0], 'roll_ga_away': a_s[1], 'roll_shots_away': a_s[2], 'roll_poss_away': a_s[3], 'roll_corners_away': a_s[4], 'cs_rate_away': a_s[5]
-            }
-            
-            X = pd.DataFrame([data])
+        data = fetch_hyper_context(mid)
+        if data:
+            df_in = pd.DataFrame([data])
             for col in FEATURES:
-                if col not in X.columns: X[col] = 0
-            X_scaled = pd.DataFrame(scaler.transform(X[FEATURES]), columns=FEATURES)
+                if col not in df_in.columns: df_in[col] = 0
+            X_scaled = pd.DataFrame(scaler.transform(df_in[FEATURES]), columns=FEATURES)
             probs = model.predict_proba(X_scaled)[0]
-            print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}%")
-        except: print(f"{mid:<10} | Error fetching live stats.")
+            
+            # Determine Prediction Label
+            # Classes: 0=Home, 1=Draw, 2=Away
+            pred_idx = np.argmax(probs)
+            pred_label = {0: 'L', 1: 'E', 2: 'V'}[pred_idx]
+            
+            print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}% |  {pred_label}")
 
 if __name__ == "__main__":
-    import time
     if os.path.exists('current_progol_ids.json'):
         with open('current_progol_ids.json', 'r') as f:
             cache = json.load(f)

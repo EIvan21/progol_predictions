@@ -21,87 +21,59 @@ SCALER_PATH = 'models/scaler.pkl'
 DATA_PATH = 'data/processed/final_train_data.csv'
 
 def objective_xgb(trial, X, y):
-    param = {
-        'max_depth': trial.suggest_int('max_depth', 3, 8),
-        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
-        'subsample': trial.suggest_float('subsample', 0.6, 0.9),
-        'n_estimators': 200,
-        'tree_method': 'hist'
-    }
+    param = {'max_depth': trial.suggest_int('max_depth', 3, 8), 'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1), 'subsample': trial.suggest_float('subsample', 0.6, 0.9), 'n_estimators': 200, 'tree_method': 'hist'}
     model = xgb.XGBClassifier(**param, random_state=42)
     cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
     scores = []
     for train_idx, val_idx in cv.split(X, y):
-        X_t, X_v = X.iloc[train_idx], X.iloc[val_idx]
-        y_t, y_v = y.iloc[train_idx], y.iloc[val_idx]
-        model.fit(X_t, y_t)
-        scores.append(accuracy_score(y_v, model.predict(X_v)))
+        X_t, X_v = X.iloc[train_idx], X.iloc[val_idx]; y_t, y_v = y.iloc[train_idx], y.iloc[val_idx]
+        model.fit(X_t, y_t); scores.append(accuracy_score(y_v, model.predict(X_v)))
     return np.mean(scores)
 
 def train_progol_model(df):
-    logging.info("--- 🏆 STARTING ROBUST HYPER-ENSEMBLE ---")
-    
-    # Exclude text-based columns and IDs
-    exclude = [
-        'fixture_id', 'date', 'target', 'home_id', 'away_id', 
-        'home_name', 'away_name', 'status', 'league_name',
-        'goals_home', 'goals_away', 'total_goals', 'result', 'year',
-        'venue', 'referee' # Added these to fix the crash
-    ]
+    logging.info("--- 🏆 STARTING HYPER-ENSEMBLE TRAINING ---")
+    exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name', 'goals_home', 'goals_away', 'total_goals', 'result', 'year', 'venue', 'referee']
     features = [c for c in df.columns if c not in exclude]
+    df = df.dropna(subset=['target']); X = df[features].fillna(0); y = df['target']
     
-    # 1. Smarter Cleaning: Only drop if Target is missing. 
-    # Features missing values will be filled with 0.
-    df = df.dropna(subset=['target'])
-    X = df[features].fillna(0)
-    y = df['target']
-    
-    logging.info(f"Initial Rows: {len(df)} | Features: {len(features)}")
-    
-    if len(X) == 0:
-        logging.error("CRITICAL: No data remaining after cleaning!")
-        return
-
     scaler = StandardScaler()
     X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=features)
     with open(SCALER_PATH, 'wb') as f: pickle.dump(scaler, f)
     
-    # Optuna Study
-    logging.info("Optimizing XGBoost...")
     study = optuna.create_study(direction='maximize')
     study.optimize(lambda trial: objective_xgb(trial, X_scaled, y), n_trials=10)
     
+    # Base Models
+    best_xgb = xgb.XGBClassifier(**study.best_params, random_state=42)
     base_models = [
-        ('xgb', xgb.XGBClassifier(**study.best_params, random_state=42)),
+        ('xgb', best_xgb),
         ('rf', RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, class_weight='balanced')),
         ('cat', CatBoostClassifier(iterations=300, silent=True, auto_class_weights='Balanced'))
     ]
     
-    stack_model = StackingClassifier(
-        estimators=base_models,
-        final_estimator=LogisticRegression(),
-        cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42),
-        stack_method='predict_proba',
-        n_jobs=-1
-    )
+    stack_model = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42), stack_method='predict_proba', n_jobs=-1)
     
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42, stratify=y)
-    logging.info(f"Training on {len(X_train)} matches...")
     stack_model.fit(X_train, y_train)
     
-    y_pred = stack_model.predict(X_test)
-    acc = accuracy_score(y_test, y_pred)
-    logging.info(f"🔥 FINAL STACKED ACCURACY: {acc:.4f}")
+    # EXTRACT FEATURE IMPORTANCE (From the tuned XGBoost component)
+    best_xgb.fit(X_train, y_train)
+    feat_imp = dict(zip(features, [float(x) for x in best_xgb.feature_importances_]))
+
+    acc = accuracy_score(y_test, stack_model.predict(X_test))
+    report = classification_report(y_test, stack_model.predict(X_test), output_dict=True)
     
     metrics = {
-        "model_type": "RobustStackedEnsemble",
+        "model_type": "StackedEnsemble",
         "accuracy": acc,
         "features": features,
-        "classification_report": classification_report(y_test, y_pred, output_dict=True)
+        "feature_importance": feat_imp,
+        "classification_report": report
     }
     
     with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
     with open(MODEL_PATH, 'wb') as f: pickle.dump(stack_model, f)
+    logging.info(f"🔥 FINAL ACCURACY: {acc:.4f}")
     return metrics
 
 if __name__ == "__main__":
