@@ -60,7 +60,8 @@ def generate_methodology_report():
     # 1. Experiment Overview
     with doc.create(Section('Experiment Overview')):
         doc.append(f"This report documents the results of the '{strat_name}' experiment run in '{mode_str}' mode. ")
-        doc.append(f"The model was trained on a total of {int(metrics['classification_report']['macro avg']['support'])} matches.")
+        if 'classification_report' in metrics and 'macro avg' in metrics['classification_report']:
+            doc.append(f"The model was trained on a total of {int(metrics['classification_report']['macro avg']['support'])} matches.")
 
     # 2. Methodology Section (DYNAMIC)
     strategy_title, strategy_text = get_strategy_description(config.WEIGHT_STRATEGY)
@@ -73,23 +74,28 @@ def generate_methodology_report():
         doc.append("To prevent overfitting, we performed a Grid Search with Stratified K-Fold Cross-Validation. "
                    "The following optimal parameters were identified for this specific experiment:")
         with doc.create(Subsection('Optimal Parameters')):
-            for k, v in metrics['best_params'].items():
-                doc.append(italic(f"{k}: {v}"))
-                doc.append(NoEscape(r"\\"))
+            params = metrics.get('best_params', {})
+            if isinstance(params, dict):
+                for k, v in params.items():
+                    doc.append(italic(f"{k}: {v}"))
+                    doc.append(NoEscape(r"\\"))
+            else:
+                doc.append(italic(str(params)))
 
     # 4. Performance Metrics
-    with doc.create(Section('Performance Analysis')):
-        doc.append(f"Accuracy: {metrics['accuracy']:.4f} | F1-Macro: {metrics['f1_macro']:.4f}")
-        
-        with doc.create(Subsection('Classification Report')):
-            with doc.create(Tabular('l|cccc')) as table:
-                table.add_hline()
-                table.add_row(("Class", "Precision", "Recall", "F1-Score", "Support"))
-                table.add_hline()
-                for label, stats in metrics['classification_report'].items():
-                    if label in ['accuracy', 'macro avg', 'weighted avg']: continue
-                    table.add_row((label, f"{stats['precision']:.2f}", f"{stats['recall']:.2f}", f"{stats['f1-score']:.2f}", int(stats['support'])))
-                table.add_hline()
+    if 'classification_report' in metrics:
+        with doc.create(Section('Performance Analysis')):
+            doc.append(f"Accuracy: {metrics['accuracy']:.4f}")
+            
+            with doc.create(Subsection('Classification Report')):
+                with doc.create(Tabular('l|cccc')) as table:
+                    table.add_hline()
+                    table.add_row(("Class", "Precision", "Recall", "F1-Score", "Support"))
+                    table.add_hline()
+                    for label, stats in metrics['classification_report'].items():
+                        if label in ['accuracy', 'macro avg', 'weighted avg']: continue
+                        table.add_row((label, f"{stats['precision']:.2f}", f"{stats['recall']:.2f}", f"{stats['f1-score']:.2f}", int(stats['support'])))
+                    table.add_hline()
 
     # 5. Feature Importance
     with doc.create(Section('Feature Importance')):
