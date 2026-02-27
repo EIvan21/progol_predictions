@@ -94,5 +94,12 @@ def predict_progol(match_ids):
 if __name__ == "__main__":
     ids_file = 'current_progol_ids.json'
     if os.path.exists(ids_file):
-        with open(ids_file, 'r') as f: ids = json.load(f)
+        with open(ids_file, 'r') as f:
+            cache = json.load(f)
+            # Handle both old (list) and new (dict) formats
+            if isinstance(cache, dict):
+                ids = cache.get('match_ids', [])
+                print(f"Loaded {len(ids)} match IDs (Scraped on: {cache.get('last_updated')})")
+            else:
+                ids = cache
         predict_progol(ids)
