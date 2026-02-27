@@ -5,6 +5,10 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 import pickle
+import warnings
+
+# Suppress annoying sklearn/xgboost feature name warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 
 load_dotenv()
 MODEL_PATH = 'models/progol_model.bin'
@@ -47,7 +51,7 @@ def fetch_match_context(match_id):
             'days_rest_home': 7, 'days_rest_away': 7, 'h2h_home_win_rate': 0.33
         }
     except Exception as e:
-        print(f"Error fetching match data: {e}"); return None
+        return None
 
 def predict_progol(match_ids):
     if not os.path.exists(METRICS_PATH): return
@@ -69,14 +73,16 @@ def predict_progol(match_ids):
     for mid in match_ids:
         data = fetch_match_context(mid)
         if data:
-            # Ensure all features exist in the fetched data
+            # 1. Ensure all features exist and are in the correct order
             df_input = pd.DataFrame([data])
             for col in FEATURES:
                 if col not in df_input.columns:
                     df_input[col] = 0
             
             X = df_input[FEATURES]
-            X_scaled = scaler.transform(X)
+            
+            # 2. Scale and RE-CONVERT to DataFrame to keep feature names
+            X_scaled = pd.DataFrame(scaler.transform(X), columns=FEATURES)
             
             all_probs = []
             for m in models.values():
