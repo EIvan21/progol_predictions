@@ -74,7 +74,7 @@ def train_progol_model(df):
     stack_model = StackingClassifier(
         estimators=base_models,
         final_estimator=LogisticRegression(),
-        cv=TimeSeriesSplit(n_splits=3),
+        cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
         stack_method='predict_proba',
         n_jobs=-1
     )

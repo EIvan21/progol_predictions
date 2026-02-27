@@ -10,11 +10,10 @@ def get_connection():
     return sqlite3.connect(DB_PATH)
 
 def init_db():
-    """Initializes the database schema."""
     conn = get_connection()
     cursor = conn.cursor()
     
-    # Matches table
+    # Expanded Matches table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS matches (
             fixture_id INTEGER PRIMARY KEY,
@@ -30,18 +29,28 @@ def init_db():
             goals_home INTEGER,
             goals_away INTEGER,
             status TEXT,
+            
+            -- Dimension 1: Match Statistics
+            home_shots INTEGER,
+            away_shots INTEGER,
+            home_possession INTEGER,
+            away_possession INTEGER,
+            home_corners INTEGER,
+            away_corners INTEGER,
+            
+            -- Dimension 2: Standings
+            home_rank INTEGER,
+            away_rank INTEGER,
+            
             UNIQUE(fixture_id)
         )
     ''')
     conn.commit()
     conn.close()
-    logging.info("Database initialized successfully.")
+    logging.info("Database expanded with Stats and Standings.")
 
 def save_matches_to_db(matches_list, season):
-    """Inserts or replaces matches in the database."""
-    if not matches_list:
-        return 0
-        
+    if not matches_list: return 0
     conn = get_connection()
     count = 0
     for m in matches_list:
@@ -51,66 +60,52 @@ def save_matches_to_db(matches_list, season):
                 (fixture_id, league_id, season, date, venue, referee, home_id, home_name, away_id, away_name, goals_home, goals_away, status)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                m['fixture']['id'],
-                m['league']['id'],
-                season,
-                m['fixture']['date'],
-                m['fixture']['venue']['name'] or "Unknown",
-                m['fixture']['referee'] or "Unknown",
-                m['teams']['home']['id'],
-                m['teams']['home']['name'],
-                m['teams']['away']['id'],
-                m['teams']['away']['name'],
-                m['goals']['home'],
-                m['goals']['away'],
-                m['fixture']['status']['short']
+                m['fixture']['id'], m['league']['id'], season, m['fixture']['date'],
+                m['fixture']['venue']['name'] or "Unknown", m['fixture']['referee'] or "Unknown",
+                m['teams']['home']['id'], m['teams']['home']['name'],
+                m['teams']['away']['id'], m['teams']['away']['name'],
+                m['goals']['home'], m['goals']['away'], m['fixture']['status']['short']
             ))
             count += 1
-        except Exception as e:
-            continue
-            
+        except: continue
     conn.commit()
     conn.close()
     return count
 
-def get_latest_match_date(league_id, season):
-    """Returns the date of the most recent match for a league/season."""
+def update_match_stats(fixture_id, stats_data):
+    """Updates a specific match with its detailed statistics."""
     conn = get_connection()
-    cursor = conn.cursor()
+    # stats_data example: {'home_shots': 10, 'away_shots': 5, ...}
+    conn.execute('''
+        UPDATE matches SET 
+        home_shots = ?, away_shots = ?, 
+        home_possession = ?, away_possession = ?, 
+        home_corners = ?, away_corners = ?
+        WHERE fixture_id = ?
+    ''', (
+        stats_data.get('home_shots'), stats_data.get('away_shots'),
+        stats_data.get('home_possession'), stats_data.get('away_possession'),
+        stats_data.get('home_corners'), stats_data.get('away_corners'),
+        fixture_id
+    ))
+    conn.commit()
+    conn.close()
+
+def update_match_ranks(fixture_id, home_rank, away_rank):
+    conn = get_connection()
+    conn.execute('UPDATE matches SET home_rank = ?, away_rank = ? WHERE fixture_id = ?', (home_rank, away_rank, fixture_id))
+    conn.commit()
+    conn.close()
+
+def get_latest_match_date(league_id, season):
+    conn = get_connection(); cursor = conn.cursor()
     cursor.execute("SELECT MAX(date) FROM matches WHERE league_id = ? AND season = ?", (league_id, season))
     res = cursor.fetchone()[0]
     conn.close()
     return res
 
 def get_all_matches_df():
-    """Returns all matches as a Pandas DataFrame."""
     conn = get_connection()
     df = pd.read_sql_query("SELECT * FROM matches WHERE status = 'FT'", conn)
     conn.close()
     return df
-
-def get_h2h_stats(team1_id, team2_id, current_date):
-    """Calculates historical H2H results between two teams before a specific date."""
-    conn = get_connection()
-    query = '''
-        SELECT goals_home, goals_away, home_id 
-        FROM matches 
-        WHERE status = 'FT' 
-        AND date < ? 
-        AND ((home_id = ? AND away_id = ?) OR (home_id = ? AND away_id = ?))
-    '''
-    df = pd.read_sql_query(query, conn, params=(current_date, team1_id, team2_id, team2_id, team1_id))
-    conn.close()
-    
-    if df.empty:
-        return 0.33, 0.33, 0.33 # Equal probability if no history
-        
-    def get_res(row):
-        if row['goals_home'] == row['goals_away']: return 'D'
-        if row['home_id'] == team1_id:
-            return 'W' if row['goals_home'] > row['goals_away'] else 'L'
-        else:
-            return 'W' if row['goals_away'] > row['goals_home'] else 'L'
-            
-    results = df.apply(get_res, axis=1).value_counts(normalize=True)
-    return results.get('W', 0), results.get('D', 0), results.get('L', 0)

@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 import time
 import logging
@@ -7,7 +6,6 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import database
 
-# Setup Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -17,74 +15,67 @@ logging.basicConfig(
 load_dotenv()
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
-FETCH_CACHE_FILE = 'data/last_fetch.json'
+headers = {"x-apisports-key": API_KEY}
 
-LEAGUES = {
-    "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
-    "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina Primera": 128, 
-    "Portugal": 94, "Netherlands": 88, "Belgium": 144, "Turkey": 203,
-    "Championship": 40, "Spain Segunda": 141, "Italy Serie B": 136, "Germany 2. Bundesliga": 79,
-    "Liga MX Expansion": 263, "Copa Libertadores": 13, "Champions League": 2, "Europa League": 3,
-    "Eredivisie": 88
-}
+LEAGUES = {"Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78, "MLS": 253}
+SEASONS = [2023, 2024] # Reduced seasons for statistical depth
 
-SEASONS = [2019, 2020, 2021, 2022, 2023, 2024]
-
-def should_skip_fetch():
-    """Checks if we have already attempted an API fetch today."""
-    if not os.path.exists(FETCH_CACHE_FILE):
-        return False
+def fetch_match_details(fixture_id):
+    """Fetches Dimension 1: Shots, Possession, Corners."""
     try:
-        with open(FETCH_CACHE_FILE, 'r') as f:
-            cache = json.load(f)
-            return cache.get('last_fetch_date') == datetime.now().strftime("%Y-%m-%d")
-    except:
-        return False
+        url = f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}"
+        res = requests.get(url, headers=headers).json()
+        if not res.get('response'): return None
+        
+        stats = {}
+        for team_stat in res['response']:
+            prefix = 'home' if team_stat == res['response'][0] else 'away'
+            for item in team_stat['statistics']:
+                if item['type'] == 'Shots on Goal': stats[f'{prefix}_shots'] = int(item['value'] or 0)
+                if item['type'] == 'Ball Possession': stats[f'{prefix}_possession'] = int(str(item['value'] or "0").replace('%',''))
+                if item['type'] == 'Corner Kicks': stats[f'{prefix}_corners'] = int(item['value'] or 0)
+        return stats
+    except: return None
 
-def record_fetch_attempt():
-    """Records that we successfully checked for data today."""
-    os.makedirs('data', exist_ok=True)
-    with open(FETCH_CACHE_FILE, 'w') as f:
-        json.dump({'last_fetch_date': datetime.now().strftime("%Y-%m-%d")}, f)
-
-def fetch_league_data_incremental(league_id, season, name):
-    last_date = database.get_latest_match_date(league_id, season)
-    url = f"{BASE_URL}/fixtures"
-    headers = {"x-apisports-key": API_KEY}
-    params = {"league": league_id, "season": season}
+def enrich_database():
+    """Finds matches without stats and updates them."""
+    conn = database.get_connection()
+    # Get fixtures from the last 2 years that are missing stats
+    query = "SELECT fixture_id FROM matches WHERE status = 'FT' AND home_shots IS NULL LIMIT 100"
+    fixtures = pd.read_sql_query(query, conn)['fixture_id'].tolist()
+    conn.close()
     
-    if last_date:
-        start_date = (datetime.strptime(last_date[:10], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-        params["from"] = start_date
-        params["to"] = datetime.now().strftime("%Y-%m-%d")
-        if start_date > params["to"]: return
+    if not fixtures:
+        logging.info("All matches are already enriched with statistics.")
+        return
 
-    try:
-        logging.info(f"Checking {name} {season} for new matches...")
-        response = requests.get(url, headers=headers, params=params)
-        data = response.json()
-        matches = data.get('response', [])
-        if matches:
-            saved = database.save_matches_to_db(matches, season)
-            logging.info(f"Added {saved} new matches for {name}.")
-    except Exception as e:
-        logging.error(f"Error fetching {name}: {e}")
+    logging.info(f"Enriching {len(fixtures)} matches with detailed stats...")
+    for fid in fixtures:
+        details = fetch_match_details(fid)
+        if details:
+            database.update_match_stats(fid, details)
+            logging.info(f"Updated Fixture {fid} with stats.")
+        time.sleep(1.2) # API Rate limit
 
 if __name__ == "__main__":
-    if not API_KEY:
-        logging.critical("API Key missing!")
-        exit(1)
-
-    if should_skip_fetch():
-        print(f"\n✅ DATABASE ALREADY UPDATED TODAY ({datetime.now().strftime('%Y-%m-%d')}). skipping API search.")
-        exit(0)
-
     database.init_db()
-    logging.info("Starting Daily Data Check...")
-    for name, league_id in LEAGUES.items():
-        for season in SEASONS:
-            fetch_league_data_incremental(league_id, season, name)
-            time.sleep(1.2)
     
-    record_fetch_attempt()
-    logging.info("Daily Data Check Completed.")
+    # 1. Standard Fetch (Incremental)
+    logging.info("Performing standard incremental fetch...")
+    for name, lid in LEAGUES.items():
+        for season in SEASONS:
+            last_date = database.get_latest_match_date(lid, season)
+            params = {"league": lid, "season": season}
+            if last_date:
+                start = (datetime.strptime(last_date[:10], "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                params["from"], params["to"] = start, datetime.now().strftime("%Y-%m-%d")
+                if start > params["to"]: continue
+            
+            res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params=params).json()
+            database.save_matches_to_db(res.get('response', []), season)
+            time.sleep(1.2)
+
+    # 2. Enrich matches with stats (Dimension 1)
+    enrich_database()
+    
+    logging.info("Data Fetch & Enrichment Completed.")
