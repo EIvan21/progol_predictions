@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 from dotenv import load_dotenv
+import logging
 
 # Config
 load_dotenv()
@@ -12,10 +13,11 @@ MODEL_PATH = 'models/progol_xgb_model.json'
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 
+# Features must match train_model.py exactly
 FEATURES = [
     'league_id', 'venue', 'referee',
-    'avg_goals_scored_home', 'avg_goals_conceded_home', 'days_rest_home',
-    'avg_goals_scored_away', 'avg_goals_conceded_away', 'days_rest_away'
+    'ewm_goals_for_home', 'ewm_goals_against_home', 'ewm_goal_diff_home', 'ewm_form_points_home', 'days_rest_home',
+    'ewm_goals_for_away', 'ewm_goals_against_away', 'ewm_goal_diff_away', 'ewm_form_points_away', 'days_rest_away'
 ]
 
 def fetch_real_rolling_stats(match_id):
@@ -23,39 +25,55 @@ def fetch_real_rolling_stats(match_id):
     headers = {"x-apisports-key": API_KEY}
     
     # 1. Get Fixture Details
-    res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
-    if not res['response']: return None
-    
-    match = res['response'][0]
-    h_id, a_id = match['teams']['home']['id'], match['teams']['away']['id']
-    
-    def get_team_avg(team_id):
-        # Get last 5 matches for this team
-        url = f"{BASE_URL}/fixtures?team={team_id}&last=5&status=FT"
-        games = requests.get(url, headers=headers).json()['response']
+    try:
+        res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
+        if not res.get('response'): return None
         
-        goals_for, goals_against = [], []
-        for g in games:
-            is_home = g['teams']['home']['id'] == team_id
-            goals_for.append(g['goals']['home'] if is_home else g['goals']['away'])
-            goals_against.append(g['goals']['away'] if is_home else g['goals']['home'])
+        match = res['response'][0]
+        h_id, a_id = match['teams']['home']['id'], match['teams']['away']['id']
+        
+        def get_team_ewm_stats(team_id, span=5):
+            # Get last 10 matches to have enough data for a good EWM
+            url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
+            games = requests.get(url, headers=headers).json().get('response', [])
             
-        return np.mean(goals_for), np.mean(goals_against)
+            if not games:
+                return 0, 0, 0, 0
+            
+            stats_list = []
+            for g in reversed(games): # EWM expects chronological order
+                is_home = g['teams']['home']['id'] == team_id
+                gf = g['goals']['home'] if is_home else g['goals']['away']
+                ga = g['goals']['away'] if is_home else g['goals']['home']
+                gd = gf - ga
+                pts = 3 if gd > 0 else (1 if gd == 0 else 0)
+                stats_list.append({'gf': gf, 'ga': ga, 'gd': gd, 'pts': pts})
+            
+            team_df = pd.DataFrame(stats_list)
+            ewm = team_df.ewm(span=span).mean().iloc[-1]
+            return ewm['gf'], ewm['ga'], ewm['gd'], ewm['pts']
 
-    h_avg_f, h_avg_a = get_team_avg(h_id)
-    a_avg_f, a_avg_a = get_team_avg(a_id)
-    
-    return {
-        'league_id': match['league']['id'],
-        'venue': hash(match['fixture']['venue']['name']) % 1000, # Consistent encoding
-        'referee': hash(match['fixture']['referee']) % 1000,
-        'avg_goals_scored_home': h_avg_f, 'avg_goals_conceded_home': h_avg_a, 'days_rest_home': 7,
-        'avg_goals_scored_away': a_avg_f, 'avg_goals_conceded_away': a_avg_a, 'days_rest_away': 7
-    }
+        h_gf, h_ga, h_gd, h_pts = get_team_ewm_stats(h_id)
+        a_gf, a_ga, a_gd, a_pts = get_team_ewm_stats(a_id)
+        
+        return {
+            'league_id': match['league']['id'],
+            'venue': hash(match['fixture']['venue']['name'] or "Unknown") % 1000,
+            'referee': hash(match['fixture']['referee'] or "Unknown") % 1000,
+            'ewm_goals_for_home': h_gf, 'ewm_goals_against_home': h_ga, 'ewm_goal_diff_home': h_gd, 'ewm_form_points_home': h_pts, 'days_rest_home': 7,
+            'ewm_goals_for_away': a_gf, 'ewm_goals_against_away': a_ga, 'ewm_goal_diff_away': a_gd, 'ewm_form_points_away': a_pts, 'days_rest_away': 7
+        }
+    except Exception as e:
+        print(f"Error fetching stats for match {match_id}: {e}")
+        return None
 
 def predict_progol(match_ids):
-    if not os.path.exists(MODEL_PATH): return
-    model = xgb.XGBClassifier(); model.load_model(MODEL_PATH)
+    if not os.path.exists(MODEL_PATH):
+        print(f"Model not found at {MODEL_PATH}")
+        return
+        
+    model = xgb.XGBClassifier()
+    model.load_model(MODEL_PATH)
     
     print(f"\n{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10}")
     print("-" * 55)
@@ -67,12 +85,9 @@ def predict_progol(match_ids):
             probs = model.predict_proba(X)[0]
             print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}%")
         else:
-            print(f"{mid:<10} | Match data not found.")
+            print(f"{mid:<10} | Match data not found or error occurred.")
 
 if __name__ == "__main__":
-    import sys
-    
-    # 1. Try to load IDs from the automated scraper output
     ids_file = 'current_progol_ids.json'
     
     if os.path.exists(ids_file):
@@ -80,9 +95,8 @@ if __name__ == "__main__":
             PROGOL_MATCH_IDS = json.load(f)
         print(f"Loaded {len(PROGOL_MATCH_IDS)} match IDs from {ids_file}")
     else:
-        # Fallback: Manual IDs if file is missing
-        print(f"Warning: {ids_file} not found. Using default placeholder IDs.")
-        PROGOL_MATCH_IDS = [1228220, 1208154, 1208155, 1208156, 1208157]
+        print(f"Warning: {ids_file} not found. No IDs to predict.")
+        PROGOL_MATCH_IDS = []
 
     if PROGOL_MATCH_IDS:
         predict_progol(PROGOL_MATCH_IDS)
