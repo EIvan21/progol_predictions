@@ -20,15 +20,21 @@ def fetch_match_stats(team_id):
     url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
     try:
         data = requests.get(url, headers=headers).json().get('response', [])
-        if not data: return 0, 0, 0, 0, 0, 0, 0.3
+        if not data: return 0, 0, 0, 50, 4 # gf, ga, sh, po, co
         stats = []
         for g in reversed(data):
             is_h = g['teams']['home']['id'] == team_id
             gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
-            stats.append({'gf':gf, 'ga':ga, 'sh': 5, 'po': 50, 'co': 4, 'cs': (1 if ga==0 else 0), 'win': (1 if gf>ga else 0)})
+            stats.append({'gf':gf, 'ga':ga, 'sh': 10, 'po': 50, 'co': 4})
         df = pd.DataFrame(stats).mean()
-        return df['gf'], df['ga'], df['sh'], df['po'], df['co'], df['cs'], df['win']
-    except: return 0, 0, 0, 0, 0, 0, 0.3
+        
+        # Calculate Interaction Terms
+        off_eff = df['gf'] / (df['sh'] + 1)
+        press_idx = (df['po'] * df['co']) / 100
+        def_res = df['sh'] / (df['ga'] + 1)
+        
+        return df['gf'], df['ga'], df['sh'], df['po'], df['co'], off_eff, press_idx, def_res
+    except: return 0, 0, 0, 50, 4, 0, 2, 0
 
 def predict_progol(match_ids):
     if not os.path.exists(METRICS_PATH): return
@@ -46,21 +52,21 @@ def predict_progol(match_ids):
             m_res = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=headers).json()['response'][0]
             h_id, a_id = m_res['teams']['home']['id'], m_res['teams']['away']['id']
             
-            # Fetch Home and Away
             h = fetch_match_stats(h_id)
             a = fetch_match_stats(a_id)
             
-            # Calculate DIFFERENTIALS (Gap = Home - Away)
+            # Map stats to the new Differential Interface
             data = {
                 'league_id': m_res['league']['id'],
                 'venue_encoded': 0.45, 'ref_encoded': 0.33,
                 'roll_gf_diff': h[0] - a[0],
                 'roll_ga_diff': h[1] - a[1],
-                'roll_shots_diff': h[2] - a[2],
-                'roll_poss_diff': h[3] - a[3],
-                'roll_corners_diff': h[4] - a[4],
-                'cs_rate_diff': h[5] - a[5],
-                'power_score_diff': h[6] - a[6]
+                'roll_sh_diff': h[2] - a[2],
+                'roll_po_diff': h[3] - a[3],
+                'roll_co_diff': h[4] - a[4],
+                'off_efficiency_diff': h[5] - a[5],
+                'pressure_index_diff': h[6] - a[6],
+                'def_resilience_diff': h[7] - a[7]
             }
             
             X = pd.DataFrame([data])
