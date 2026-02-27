@@ -20,7 +20,7 @@ def fetch_match_stats(team_id):
     url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
     try:
         data = requests.get(url, headers=headers).json().get('response', [])
-        if not data: return 0, 0, 0, 50, 4 # gf, ga, sh, po, co
+        if not data: return 0, 0, 0, 50, 4, 0, 2, 0
         stats = []
         for g in reversed(data):
             is_h = g['teams']['home']['id'] == team_id
@@ -28,7 +28,6 @@ def fetch_match_stats(team_id):
             stats.append({'gf':gf, 'ga':ga, 'sh': 10, 'po': 50, 'co': 4})
         df = pd.DataFrame(stats).mean()
         
-        # Calculate Interaction Terms
         off_eff = df['gf'] / (df['sh'] + 1)
         press_idx = (df['po'] * df['co']) / 100
         def_res = df['sh'] / (df['ga'] + 1)
@@ -51,11 +50,10 @@ def predict_progol(match_ids):
         try:
             m_res = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=headers).json()['response'][0]
             h_id, a_id = m_res['teams']['home']['id'], m_res['teams']['away']['id']
-            
             h = fetch_match_stats(h_id)
             a = fetch_match_stats(a_id)
             
-            # Map stats to the new Differential Interface
+            # Differential Mapping (Match features from preprocess.py)
             data = {
                 'league_id': m_res['league']['id'],
                 'venue_encoded': 0.45, 'ref_encoded': 0.33,
@@ -73,13 +71,20 @@ def predict_progol(match_ids):
             for col in FEATURES:
                 if col not in X.columns: X[col] = 0
             X_scaled = pd.DataFrame(scaler.transform(X[FEATURES]), columns=FEATURES)
+            
+            # Ensemble probabilities
             probs = model.predict_proba(X_scaled)[0]
-            pred_label = {0:'L', 1:'E', 2:'V'}[np.argmax(probs)]
+            
+            # Output result with refined labels
+            pred_idx = np.argmax(probs)
+            pred_label = {0: 'L', 1: 'E', 2: 'V'}[pred_idx]
+            
             print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}% |  {pred_label}")
         except: continue
 
 if __name__ == "__main__":
     if os.path.exists('current_progol_ids.json'):
         with open('current_progol_ids.json', 'r') as f:
-            ids = json.load(f).get('match_ids', [])
+            cache = json.load(f)
+            ids = cache.get('match_ids', []) if isinstance(cache, dict) else cache
         predict_progol(ids)

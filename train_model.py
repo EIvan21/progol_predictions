@@ -5,10 +5,9 @@ from catboost import CatBoostClassifier
 from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-from sklearn.calibration import CalibratedClassifierCV
-from sklearn.neural_network import MLPClassifier
 from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.metrics import accuracy_score, classification_report
+from imblearn.under_sampling import RandomUnderSampler
 import os
 import json
 import logging
@@ -16,52 +15,67 @@ import pickle
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-MODEL_PATH = 'models/progol_stack_model.bin'
 METRICS_PATH = 'models/metrics.json'
+MODEL_PATH = 'models/progol_stack_model.bin'
 SCALER_PATH = 'models/scaler.pkl'
 DATA_PATH = 'data/processed/final_train_data.csv'
 
 def train_progol_model(df):
-    logging.info("--- 🏆 TRAINING STRATEGY 6: DIFFERENTIAL ENSEMBLE ---")
+    logging.info("--- ⚖️ STARTING BALANCED PROGOL TRAINING ---")
     
-    exclude = ['fixture_id', 'date', 'target']
+    exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name', 'goals_home', 'goals_away', 'total_goals', 'result', 'year', 'venue', 'referee']
     features = [c for c in df.columns if c not in exclude]
-    df = df.dropna(subset=['target']); X = df[features].fillna(0); y = df['target']
+    df = df.dropna(subset=['target'])
+    X, y = df[features].fillna(0), df['target']
     
     scaler = StandardScaler()
     X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=features)
     with open(SCALER_PATH, 'wb') as f: pickle.dump(scaler, f)
     
-    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42, stratify=y)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    # CRITICAL FIX: UNDER-SAMPLING (Killer of Home-Bias)
+    # We force the model to see an equal number of L, E, and V matches.
+    rus = RandomUnderSampler(random_state=42)
+    X_bal, y_bal = rus.fit_resample(X_scaled, y)
+    logging.info(f"Balanced Dataset Created: {X_bal.shape[0]} total matches ({len(X_bal)//3} per class).")
 
-    # 1. Complex Neural Network (Deep Learning)
-    nn = MLPClassifier(hidden_layer_sizes=(256, 128, 64), max_iter=1000, early_stopping=True, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(X_bal, y_bal, test_size=0.15, random_state=42, stratify=y_bal)
     
-    # 2. Calibrated Base Models (Fixes the "All L" confidence bias)
-    xgb_model = CalibratedClassifierCV(xgb.XGBClassifier(max_depth=6, learning_rate=0.05, n_estimators=500), cv=cv)
-    rf_model = CalibratedClassifierCV(RandomForestClassifier(n_estimators=500, max_depth=12, class_weight='balanced'), cv=cv)
+    # 3 Specialized Brains
+    base_models = [
+        ('xgb', xgb.XGBClassifier(max_depth=5, learning_rate=0.05, n_estimators=300, random_state=42)),
+        ('rf', RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42)),
+        ('cat', CatBoostClassifier(iterations=300, silent=True))
+    ]
     
-    base_models = [('xgb', xgb_model), ('rf', rf_model), ('cat', CatBoostClassifier(iterations=500, silent=True, auto_class_weights='Balanced')), ('nn', nn)]
+    # The Meta-Learner (Logistic Regression) will now have a much harder time
+    # because the training data is balanced. It will be forced to learn the "Away" signals.
+    stack_model = StackingClassifier(
+        estimators=base_models,
+        final_estimator=LogisticRegression(multi_class='multinomial'),
+        cv=StratifiedKFold(n_splits=5, shuffle=True, random_state=42),
+        stack_method='predict_proba',
+        n_jobs=-1
+    )
     
-    # 3. Meta-Stacking
-    stack_model = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=cv, stack_method='predict_proba', n_jobs=-1)
-    
-    logging.info("Training Meta-Stacker with Calibration...")
+    logging.info("Training Stacked Ensemble on Balanced Data...")
     stack_model.fit(X_train, y_train)
     
     y_pred = stack_model.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
     report = classification_report(y_test, y_pred, output_dict=True)
     
-    # Extract importance from XGB part of Stacker
-    # Note: Accessing importance in a Stacker with Calibration is complex, saving placeholder
-    metrics = {"model_type": "Strategy6_Differential", "accuracy": acc, "features": features, "classification_report": report, "feature_importance": {}}
-    
+    # Save Metrics
+    metrics = {
+        "model_type": "Balanced_Stacked_v1",
+        "accuracy": acc,
+        "features": features,
+        "classification_report": report
+    }
     with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
     with open(MODEL_PATH, 'wb') as f: pickle.dump(stack_model, f)
     
-    print(f"\n--- 📈 PERFORMANCE: {acc:.4f} ---\n{classification_report(y_test, y_pred)}")
+    print(f"\n--- 📈 BALANCED PERFORMANCE: {acc:.4f} ---")
+    print(classification_report(y_test, y_pred))
     return metrics
 
 if __name__ == "__main__":
