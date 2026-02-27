@@ -1,116 +1,107 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+from catboost import CatBoostClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 from sklearn.utils.class_weight import compute_sample_weight
 import os
 import json
 import logging
+import pickle
 
-# Setup Verbose Logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler("logs/train_model.log"), logging.StreamHandler()]
 )
 
-MODEL_PATH = 'models/progol_xgb_model.json'
+MODEL_PATH = 'models/progol_model.bin'
 METRICS_PATH = 'models/metrics.json'
+SCALER_PATH = 'models/scaler.pkl'
 DATA_PATH = 'data/processed/final_train_data.csv'
 
+def get_model(model_type):
+    if model_type == 'XGBoost':
+        return xgb.XGBClassifier(n_estimators=1000, learning_rate=0.03, max_depth=6, random_state=42, early_stopping_rounds=50)
+    elif model_type == 'RandomForest':
+        return RandomForestClassifier(n_estimators=500, max_depth=12, random_state=42, class_weight='balanced')
+    elif model_type == 'CatBoost':
+        return CatBoostClassifier(iterations=1000, learning_rate=0.03, depth=6, random_seed=42, verbose=100, early_stopping_rounds=50)
+    elif model_type == 'NeuralNetwork':
+        # 3 Layers: 64 -> 32 -> 16 nodes
+        return MLPClassifier(
+            hidden_layer_sizes=(64, 32, 16),
+            activation='relu',
+            solver='adam',
+            max_iter=500,
+            early_stopping=True,
+            random_state=42,
+            verbose=False
+        )
+
 def train_progol_model(df):
-    logging.info("--- 🧠 STARTING MODEL INTEGRITY CHECK ---")
+    model_type = os.getenv('MODEL_TYPE', 'XGBoost')
+    logging.info(f"--- 🧠 TRAINING ARCHITECTURE: {model_type} ---")
     
-    # 1. Verify Data Quantity
-    total_rows = len(df)
     exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name']
     features = [c for c in df.columns if c not in exclude]
     
-    logging.info(f"TOTAL DATASET SIZE: {total_rows} matches.")
-    logging.info(f"FEATURES DETECTED ({len(features)}): {features}")
-    
-    # Drop rows with NaN (usually first games of a team's history)
     df = df.dropna(subset=features + ['target'])
-    logging.info(f"CLEANED DATASET SIZE (Post-NaN removal): {len(df)} matches.")
-
     X = df[features]
     y = df['target']
     
-    # 2. Train/Test Split with Stratification (Prevents Overfitting)
+    # NEURAL NETWORK REQUIREMENT: Feature Scaling
+    if model_type == 'NeuralNetwork':
+        logging.info("Applying Standard Scaling for Neural Network...")
+        scaler = StandardScaler()
+        X = scaler.fit_transform(X)
+        with open(SCALER_PATH, 'wb') as f:
+            pickle.dump(scaler, f)
+    
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.15, random_state=42, stratify=y
     )
     
-    logging.info(f"FINAL TRAINING POOL: {len(X_train)} matches.")
-    logging.info(f"FINAL VALIDATION POOL: {len(X_test)} matches.")
+    model = get_model(model_type)
+    
+    if model_type == 'XGBoost':
+        sw = compute_sample_weight(class_weight='balanced', y=y_train)
+        model.fit(X_train, y_train, sample_weight=sw, eval_set=[(X_test, y_test)], verbose=100)
+    elif model_type == 'CatBoost':
+        model.set_params(auto_class_weights='Balanced')
+        model.fit(X_train, y_train, eval_set=(X_test, y_test))
+    else:
+        model.fit(X_train, y_train)
 
-    # 3. Handle Class Imbalance
-    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
-    
-    # 4. XGBoost with EARLY STOPPING (The Anti-Overfit Shield)
-    # We use a lower learning rate and higher estimators with stopping
-    model = xgb.XGBClassifier(
-        objective='multi:softprob',
-        num_class=3,
-        n_estimators=2000,
-        learning_rate=0.03, # Slower learning = better generalization
-        max_depth=6,        # Limited depth to prevent memorization
-        subsample=0.8,
-        colsample_bytree=0.8,
-        gamma=0.2,          # Minimum loss reduction to split
-        random_state=42,
-        tree_method='hist',
-        early_stopping_rounds=50 # Stop if no improvement for 50 iterations
-    )
-    
-    logging.info("--- 🚀 TRAINING IN PROGRESS (With Real-Time Evaluation) ---")
-    
-    model.fit(
-        X_train, y_train,
-        sample_weight=sample_weights,
-        eval_set=[(X_train, y_train), (X_test, y_test)],
-        verbose=100 # Print status every 100 trees
-    )
-    
-    # 5. Evaluate Results
+    # Evaluate
     y_pred = model.predict(X_test)
-    train_acc = model.score(X_train, y_train)
     test_acc = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, average='macro')
     
-    logging.info("--- ✅ TRAINING COMPLETE ---")
-    logging.info(f"TRAIN ACCURACY: {train_acc:.4f}")
-    logging.info(f"VALIDATION ACCURACY: {test_acc:.4f}")
-    
-    # Detection of Overfitting
-    gap = train_acc - test_acc
-    if gap > 0.15:
-        logging.warning(f"⚠️ ALERT: HIGH OVERFITTING DETECTED (Gap: {gap:.2f})")
-    else:
-        logging.info(f"✨ Model is generalizing well (Gap: {gap:.2f})")
+    logging.info(f"VALIDATION ACCURACY: {test_acc:.4f} | F1: {f1:.4f}")
 
     metrics = {
+        "model_type": model_type,
         "accuracy": test_acc,
         "f1_macro": f1,
-        "train_acc": train_acc,
-        "best_iteration": model.best_iteration,
         "classification_report": classification_report(y_test, y_pred, output_dict=True),
-        "feature_importance": dict(zip(features, model.feature_importances_.tolist())),
-        "best_params": model.get_params()
+        "feature_importance": dict(zip(features, [float(x) for x in getattr(model, 'feature_importances_', np.zeros(len(features)))]))
     }
     
     os.makedirs('models', exist_ok=True)
     with open(METRICS_PATH, 'w') as f:
         json.dump(metrics, f, indent=4)
+    with open(MODEL_PATH, 'wb') as f:
+        pickle.dump(model, f)
         
-    model.save_model(MODEL_PATH)
-    logging.info(f"Best Model saved. Validation Accuracy: {test_acc:.4f}")
+    logging.info(f"Model saved to {MODEL_PATH}")
     return metrics
 
 if __name__ == "__main__":
     if os.path.exists(DATA_PATH):
-        df = pd.read_csv(DATA_PATH)
-        train_progol_model(df)
-    else:
-        logging.error("Data file missing. Preprocess first.")
+        df = pd.read_csv(DATA_PATH); train_progol_model(df)
+    else: logging.error("Data missing.")

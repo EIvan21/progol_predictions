@@ -2,6 +2,7 @@ requests
 pandas
 numpy
 xgboost
+catboost
 scikit-learn
 beautifulsoup4
 thefuzz
