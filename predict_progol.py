@@ -6,92 +6,87 @@ import numpy as np
 from dotenv import load_dotenv
 import pickle
 import warnings
-import time
 
 warnings.filterwarnings("ignore")
 load_dotenv()
-
+MODEL_PATH = 'models/progol_stack_model.bin'
+SCALER_PATH = 'models/scaler.pkl'
+METRICS_PATH = 'models/metrics.json'
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 
-def fetch_hyper_context(match_id):
+def fetch_match_stats(team_id):
     headers = {"x-apisports-key": API_KEY}
+    url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
     try:
-        # 1. Get Fixture Info
-        res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
-        if not res.get('response'):
-            print(f"DEBUG: No API response for match {match_id}")
-            return None
-            
-        match = res['response'][0]
-        h_id = match['teams']['home']['id']
-        a_id = match['teams']['away']['id']
-        
-        def get_team_stats(team_id):
-            url = f"{BASE_URL}/fixtures?team={team_id}&last=5&status=FT"
-            data = requests.get(url, headers=headers).json().get('response', [])
-            if not data: return 0, 0, 0, 0
-            
-            stats = []
-            for g in data:
-                is_h = g['teams']['home']['id'] == team_id
-                gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
-                stats.append({'gf': gf or 0, 'ga': ga or 0, 'sh': 5, 'po': 50})
-            
-            df = pd.DataFrame(stats).mean()
-            return df['gf'], df['ga'], df['sh'], df['po']
-
-        h_gf, h_ga, h_sh, h_po = get_team_stats(h_id)
-        time.sleep(0.5) # Rate limit safety
-        a_gf, a_ga, a_sh, a_po = get_team_stats(a_id)
-        
-        return {
-            'league_id': match['league']['id'],
-            'venue_encoded': 0.45, 'ref_encoded': 0.33,
-            'roll_gf_diff': h_gf - a_gf,
-            'roll_ga_diff': h_ga - a_ga,
-            'roll_sh_diff': h_sh - a_sh,
-            'roll_po_diff': h_po - a_po,
-            'roll_co_diff': 0, 'off_efficiency_diff': 0, 'pressure_index_diff': 0, 'def_resilience_diff': 0
-        }
-    except Exception as e:
-        print(f"DEBUG Error for {match_id}: {str(e)}")
-        return None
+        data = requests.get(url, headers=headers).json().get('response', [])
+        if not data: return 0, 0, 0, 50, 4, 0, 2, 0
+        stats = []
+        for g in reversed(data):
+            is_h = g['teams']['home']['id'] == team_id
+            gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
+            # Mock stats for real-time (as fetching stats for all 10 games is too slow for prediction)
+            stats.append({'gf':gf, 'ga':ga, 'sh': 10, 'po': 50, 'co': 4})
+        df = pd.DataFrame(stats).mean()
+        off_eff = df['gf'] / (df['sh'] + 1)
+        press_idx = (df['po'] * df['co']) / 100
+        def_res = df['sh'] / (df['ga'] + 1)
+        return df['gf'], df['ga'], df['sh'], df['po'], df['co'], off_eff, press_idx, def_res
+    except: return 0, 0, 0, 50, 4, 0, 2, 0
 
 def predict_progol(match_ids):
-    MODEL_PATH = 'models/progol_stack_model.bin'
-    SCALER_PATH = 'models/scaler.pkl'
-    METRICS_PATH = 'models/metrics.json'
-
-    if not os.path.exists(MODEL_PATH):
-        print("Error: Model missing.")
-        return
-        
+    if not os.path.exists(METRICS_PATH): return
     with open(METRICS_PATH, 'r') as f: metrics = json.load(f)
-    FEATURES = metrics.get('features', [])
+    FEATURES = metrics['features']
     with open(SCALER_PATH, 'rb') as f: scaler = pickle.load(f)
     with open(MODEL_PATH, 'rb') as f: model = pickle.load(f)
 
+    headers = {"x-apisports-key": API_KEY}
     print(f"\n{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10} | {'PRED':<5}")
     print("-" * 65)
     
+    # Store predictions to check distribution
+    results = []
+
     for mid in match_ids:
-        data = fetch_hyper_context(mid)
-        if data:
-            df_in = pd.DataFrame([data])
+        try:
+            m_res = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=headers).json()['response'][0]
+            h_id, a_id = m_res['teams']['home']['id'], m_res['teams']['away']['id']
+            h = fetch_match_stats(h_id)
+            a = fetch_match_stats(a_id)
+            
+            data = {
+                'league_id': m_res['league']['id'],
+                'venue_encoded': 0.45, 'ref_encoded': 0.33,
+                'roll_gf_diff': h[0] - a[0], 'roll_ga_diff': h[1] - a[1],
+                'roll_sh_diff': h[2] - a[2], 'roll_po_diff': h[3] - a[3], 'roll_co_diff': h[4] - a[4],
+                'off_efficiency_diff': h[5] - a[5], 'pressure_index_diff': h[6] - a[6], 'def_resilience_diff': h[7] - a[7]
+            }
+            
+            X = pd.DataFrame([data])
             for col in FEATURES:
-                if col not in df_in.columns: df_in[col] = 0
-            X_scaled = pd.DataFrame(scaler.transform(df_in[FEATURES]), columns=FEATURES)
+                if col not in X.columns: X[col] = 0
+            X_scaled = pd.DataFrame(scaler.transform(X[FEATURES]), columns=FEATURES)
+            
             probs = model.predict_proba(X_scaled)[0]
+            
+            # BIAS CORRECTION IN INFERENCE
+            # We slightly boost Draw and Away probabilities to match Progol DNA
+            probs[1] *= 1.15 # 15% boost to Draws
+            probs[2] *= 1.10 # 10% boost to Away wins
+            probs = probs / np.sum(probs) # Re-normalize to 100%
+            
             pred_idx = np.argmax(probs)
             pred_label = {0: 'L', 1: 'E', 2: 'V'}[pred_idx]
+            results.append(pred_label)
+            
             print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}% |  {pred_label}")
-        time.sleep(1) # Final safety
+        except: continue
+
+    print(f"\nTicket Distribution: L:{results.count('L')}, E:{results.count('E')}, V:{results.count('V')}")
 
 if __name__ == "__main__":
-    IDS_FILE = 'current_progol_ids.json'
-    if os.path.exists(IDS_FILE):
-        with open(IDS_FILE, 'r') as f:
-            cache = json.load(f)
-            ids = cache.get('match_ids', []) if isinstance(cache, dict) else cache
-            predict_progol(ids)
+    if os.path.exists('current_progol_ids.json'):
+        with open('current_progol_ids.json', 'r') as f:
+            ids = json.load(f).get('match_ids', [])
+        predict_progol(ids)
