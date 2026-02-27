@@ -15,36 +15,20 @@ METRICS_PATH = 'models/metrics.json'
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 
-def fetch_hyper_context(match_id):
+def fetch_match_stats(team_id):
     headers = {"x-apisports-key": API_KEY}
+    url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
     try:
-        res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
-        if not res.get('response'): return None
-        match = res['response'][0]
-        h_id, a_id = match['teams']['home']['id'], match['teams']['away']['id']
-        
-        def get_team_stats(team_id):
-            url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
-            data = requests.get(url, headers=headers).json().get('response', [])
-            if not data: return 0, 0, 0, 0.3
-            stats = []
-            for g in reversed(data):
-                is_h = g['teams']['home']['id'] == team_id
-                gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
-                stats.append({'gf':gf, 'ga':ga, 'win': 1 if gf>ga else 0, 'cs': 1 if ga==0 else 0})
-            df = pd.DataFrame(stats)
-            return df['gf'].mean(), df['ga'].mean(), df['cs'].mean(), df['win'].mean()
-
-        h_gf, h_ga, h_cs, h_p = get_team_stats(h_id)
-        a_gf, a_ga, a_cs, a_p = get_team_stats(a_id)
-        
-        return {
-            'league_id': match['league']['id'], 'league_ha_factor': 0.45,
-            'venue_encoded': 0.45, 'ref_encoded': 0.33,
-            'roll_gf_home': h_gf, 'roll_ga_home': h_ga, 'cs_rate_home': h_cs, 'power_score_home': h_p,
-            'roll_gf_away': a_gf, 'roll_ga_away': a_ga, 'cs_rate_away': a_cs, 'power_score_away': a_p
-        }
-    except: return None
+        data = requests.get(url, headers=headers).json().get('response', [])
+        if not data: return 0, 0, 0, 0, 0, 0, 0.3
+        stats = []
+        for g in reversed(data):
+            is_h = g['teams']['home']['id'] == team_id
+            gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
+            stats.append({'gf':gf, 'ga':ga, 'sh': 5, 'po': 50, 'co': 4, 'cs': (1 if ga==0 else 0), 'win': (1 if gf>ga else 0)})
+        df = pd.DataFrame(stats).mean()
+        return df['gf'], df['ga'], df['sh'], df['po'], df['co'], df['cs'], df['win']
+    except: return 0, 0, 0, 0, 0, 0, 0.3
 
 def predict_progol(match_ids):
     if not os.path.exists(METRICS_PATH): return
@@ -53,28 +37,43 @@ def predict_progol(match_ids):
     with open(SCALER_PATH, 'rb') as f: scaler = pickle.load(f)
     with open(MODEL_PATH, 'rb') as f: model = pickle.load(f)
 
+    headers = {"x-apisports-key": API_KEY}
     print(f"\n{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10} | {'PRED':<5}")
     print("-" * 65)
     
     for mid in match_ids:
-        data = fetch_hyper_context(mid)
-        if data:
-            df_in = pd.DataFrame([data])
+        try:
+            m_res = requests.get(f"{BASE_URL}/fixtures?id={mid}", headers=headers).json()['response'][0]
+            h_id, a_id = m_res['teams']['home']['id'], m_res['teams']['away']['id']
+            
+            # Fetch Home and Away
+            h = fetch_match_stats(h_id)
+            a = fetch_match_stats(a_id)
+            
+            # Calculate DIFFERENTIALS (Gap = Home - Away)
+            data = {
+                'league_id': m_res['league']['id'],
+                'venue_encoded': 0.45, 'ref_encoded': 0.33,
+                'roll_gf_diff': h[0] - a[0],
+                'roll_ga_diff': h[1] - a[1],
+                'roll_shots_diff': h[2] - a[2],
+                'roll_poss_diff': h[3] - a[3],
+                'roll_corners_diff': h[4] - a[4],
+                'cs_rate_diff': h[5] - a[5],
+                'power_score_diff': h[6] - a[6]
+            }
+            
+            X = pd.DataFrame([data])
             for col in FEATURES:
-                if col not in df_in.columns: df_in[col] = 0
-            X_scaled = pd.DataFrame(scaler.transform(df_in[FEATURES]), columns=FEATURES)
+                if col not in X.columns: X[col] = 0
+            X_scaled = pd.DataFrame(scaler.transform(X[FEATURES]), columns=FEATURES)
             probs = model.predict_proba(X_scaled)[0]
-            
-            # Determine Prediction Label
-            # Classes: 0=Home, 1=Draw, 2=Away
-            pred_idx = np.argmax(probs)
-            pred_label = {0: 'L', 1: 'E', 2: 'V'}[pred_idx]
-            
+            pred_label = {0:'L', 1:'E', 2:'V'}[np.argmax(probs)]
             print(f"{mid:<10} | {probs[0]*100:8.2f}% | {probs[1]*100:8.2f}% | {probs[2]*100:8.2f}% |  {pred_label}")
+        except: continue
 
 if __name__ == "__main__":
     if os.path.exists('current_progol_ids.json'):
         with open('current_progol_ids.json', 'r') as f:
-            cache = json.load(f)
-            ids = cache.get('match_ids', []) if isinstance(cache, dict) else cache
+            ids = json.load(f).get('match_ids', [])
         predict_progol(ids)
