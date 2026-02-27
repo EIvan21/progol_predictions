@@ -17,8 +17,13 @@ BASE_URL = "https://v3.football.api-sports.io"
 headers = {"x-apisports-key": API_KEY}
 FETCH_CACHE_FILE = 'data/last_fetch.json'
 
-LEAGUES = {"Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78, "MLS": 253}
-SEASONS = [2023, 2024]
+# Restore Full League List and Seasons
+LEAGUES = {
+    "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
+    "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
+    "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263
+}
+SEASONS = [2019, 2020, 2021, 2022, 2023, 2024]
 
 def should_skip_fetch():
     if not os.path.exists(FETCH_CACHE_FILE): return False
@@ -71,7 +76,7 @@ if __name__ == "__main__":
         exit(0)
 
     database.init_db()
-    logging.info("Starting Fresh Data Fetch...")
+    logging.info("Starting Fresh Data Fetch (Restoring 2019-2024 History)...")
     for name, lid in LEAGUES.items():
         for season in SEASONS:
             last_date = database.get_latest_match_date(lid, season)
@@ -83,7 +88,8 @@ if __name__ == "__main__":
             
             logging.info(f"Fetching {name} {season}...")
             res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params=params).json()
-            database.save_matches_to_db(res.get('response', []), season)
+            matches = res.get('response', [])
+            if matches: database.save_matches_to_db(matches, season)
             time.sleep(1.2)
     
     enrich_database_turbo()
