@@ -7,80 +7,104 @@ from dotenv import load_dotenv
 import pickle
 import joblib
 import progol_optimizer
+import warnings
+import time
 
+warnings.filterwarnings("ignore")
 load_dotenv()
+
 MODEL_PATH = 'models/calibrated_ensemble.pkl'
 IDS_FILE = 'current_progol_ids.json'
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 
-def fetch_match_stats(team_id):
+def fetch_live_match_stats(match_id):
+    """Fetches real-time pre-match stats from the API."""
     headers = {"x-apisports-key": API_KEY}
-    url = f"{BASE_URL}/fixtures?team={team_id}&last=5&status=FT"
     try:
-        data = requests.get(url, headers=headers).json().get('response', [])
-        if not data: return 0, 0, 0, 0
-        stats = []
-        for g in data:
-            is_h = g['teams']['home']['id'] == team_id
-            gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
-            stats.append({'gf':gf, 'ga':ga, 'sh': 10, 'po': 50})
-        df = pd.DataFrame(stats).mean()
-        return df['gf'], df['ga'], df['sh'], df['po']
-    except: return 0, 0, 5, 50
+        # 1. Get Match Info
+        res = requests.get(f"{BASE_URL}/fixtures?id={match_id}", headers=headers).json()
+        if not res.get('response'): return None
+        match = res['response'][0]
+        h_id, a_id = match['teams']['home']['id'], match['teams']['away']['id']
+        lid = match['league']['id']
+        
+        def get_team_rolling(team_id):
+            url = f"{BASE_URL}/fixtures?team={team_id}&last=10&status=FT"
+            data = requests.get(url, headers=headers).json().get('response', [])
+            if not data: return 0, 0, 0, 0, 0 # pts, gf, ga, sf, sa
+            stats = []
+            for g in data:
+                is_h = g['teams']['home']['id'] == team_id
+                gf, ga = (g['goals']['home'], g['goals']['away']) if is_h else (g['goals']['away'], g['goals']['home'])
+                sf = 5 # Default shot proxy if missing
+                stats.append({'pts': (3 if gf>ga else (1 if gf==ga else 0)), 'gf':gf, 'ga':ga, 'sf':sf})
+            return pd.DataFrame(stats).mean().tolist()
+
+        h_stats = get_team_rolling(h_id)
+        time.sleep(0.5) # Rate limit
+        a_stats = get_team_rolling(a_id)
+        
+        # Must match feature order in preprocess.py
+        return {
+            'league_id': lid,
+            'elo_prob_h': 0.45, # Elo would require historical database lookup
+            'elo_diff': 0,
+            'roll_form_diff': h_stats[0] - a_stats[0],
+            'roll_gf_diff': h_stats[1] - a_stats[1],
+            'roll_ga_diff': h_stats[2] - a_stats[2],
+            'roll_sf_diff': h_stats[3] - a_stats[3],
+            'roll_sa_diff': h_stats[3] - a_stats[3], # Approximate
+            'venue_enc': 0.45, 'ref_enc': 0.33
+        }
+    except Exception as e:
+        print(f"DEBUG: Error fetching match {match_id}: {e}")
+        return None
 
 def predict_progol(match_ids):
-    if not os.path.exists(MODEL_PATH): return
+    if not os.path.exists(MODEL_PATH):
+        print("Model not found. Train it first.")
+        return
+        
     package = joblib.load(MODEL_PATH)
     model, scaler, features = package['model'], package['scaler'], package['features']
 
     all_match_probs = []
-    processed_ids = []
+    final_ids = []
 
-    print(f"\n🚀 GENERATING OPTIMIZED TICKET (Budget: $2,000 MXN)")
-    print(f"Analyzing {len(match_ids)} matches...")
-
+    print(f"\n🚀 ANALYZING LIVE DATA FOR {len(match_ids)} MATCHES...")
+    
     for mid in match_ids:
-        # Mocking context fetch for architecture demonstration
-        # In full run, this calls the API
-        h_stats = fetch_match_stats(1) # Placeholder
-        a_stats = fetch_match_stats(2) # Placeholder
-        
-        data = {
-            'league_id': 262, 'elo_prob_h': 0.45, 'elo_diff': 0,
-            'roll_form_diff': 0, 'roll_gf_diff': 0, 'roll_ga_diff': 0,
-            'roll_sf_diff': 0, 'roll_sa_diff': 0, 'venue_enc': 0.45, 'ref_enc': 0.33
-        }
-        
-        df_in = pd.DataFrame([data])
-        for col in features:
-            if col not in df_in.columns: df_in[col] = 0
-        
-        X_scaled = scaler.transform(df_in[features])
-        probs = model.predict_proba(X_scaled)[0]
-        
-        # Apply Bayesian Correction (optional, implemented in engine)
-        all_match_probs.append(probs)
-        processed_ids.append(mid)
+        data = fetch_live_match_stats(mid)
+        if data:
+            df_in = pd.DataFrame([data])
+            # Ensure order and existence
+            for col in features:
+                if col not in df_in.columns: df_in[col] = 0
+            
+            X_scaled = pd.DataFrame(scaler.transform(df_in[features]), columns=features)
+            probs = model.predict_proba(X_scaled)[0]
+            
+            all_match_probs.append(probs)
+            final_ids.append(mid)
+            print(f"✅ Resolved context for match {mid}")
+        else:
+            print(f"❌ Failed to resolve context for match {mid}")
 
-    # 3. OPTIMIZE TICKET
-    if len(all_match_probs) >= 14:
-        # Progol only uses 14 matches
-        final_probs = all_match_probs[:14]
-        final_ids = processed_ids[:14]
-    else:
-        # Pad with neutral if less than 14
+    # Pad if necessary to reach 14
+    if len(all_match_probs) < 14:
         needed = 14 - len(all_match_probs)
-        final_probs = all_match_probs + [np.array([0.33, 0.33, 0.34])] * needed
-        final_ids = processed_ids + [0] * needed
+        all_match_probs += [np.array([0.45, 0.25, 0.30])] * needed # Historical priors
+        final_ids += [0] * needed
 
-    config, cost, d, t = progol_optimizer.optimize_progol_ticket(final_probs, budget=2000)
+    # Optimize Budget
+    config, cost, d, t = progol_optimizer.optimize_progol_ticket(all_match_probs, budget=2000)
     
-    print(f"\n--- OPTIMAL TICKET STRUCTURE ---")
+    print(f"\n--- 💰 OPTIMIZED PROGOL TICKET ---")
+    print(f"Budget Utilization: ${cost} / $2,000 MXN")
     print(f"Configuration: {d} Doubles, {t} Triples")
-    print(f"Total Cost: ${cost} MXN")
     
-    progol_optimizer.print_final_ticket(final_ids, final_probs, config)
+    progol_optimizer.print_final_ticket(final_ids, all_match_probs, config)
 
 if __name__ == "__main__":
     if os.path.exists(IDS_FILE):
