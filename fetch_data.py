@@ -6,6 +6,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import database
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,13 +23,13 @@ LEAGUES = {"Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135,
 SEASONS = [2023, 2024]
 
 def fetch_match_details(fixture_id):
+    """Fetches details for a single match."""
     try:
         url = f"{BASE_URL}/fixtures/statistics?fixture={fixture_id}"
         res = requests.get(url, headers=headers).json()
-        if not res.get('response'): return None
+        if not res.get('response'): return fixture_id, None
         
         stats = {}
-        # Team 0 is usually Home, Team 1 is Away
         for i, team_stat in enumerate(res['response']):
             prefix = 'home' if i == 0 else 'away'
             for item in team_stat['statistics']:
@@ -36,39 +37,43 @@ def fetch_match_details(fixture_id):
                 if item['type'] == 'Shots on Goal': stats[f'{prefix}_shots'] = int(val or 0)
                 if item['type'] == 'Ball Possession': stats[f'{prefix}_possession'] = int(str(val or "0").replace('%',''))
                 if item['type'] == 'Corner Kicks': stats[f'{prefix}_corners'] = int(val or 0)
-        return stats
-    except: return None
+        return fixture_id, stats
+    except: return fixture_id, None
 
-def enrich_database_fully():
-    """Loops until ALL matches have statistics."""
+def enrich_database_parallel(max_workers=5):
+    """Uses multiple threads to fetch stats 5x faster."""
     while True:
         conn = database.get_connection()
-        # Fetch a batch of 50 to process (Smaller batches are safer for rate limits)
-        query = "SELECT fixture_id FROM matches WHERE status = 'FT' AND home_shots IS NULL LIMIT 50"
+        query = "SELECT fixture_id FROM matches WHERE status = 'FT' AND home_shots IS NULL LIMIT 100"
         fixtures = pd.read_sql_query(query, conn)['fixture_id'].tolist()
         conn.close()
         
         if not fixtures:
-            logging.info("🎉 SUCCESS: Entire database enriched with detailed statistics.")
+            logging.info("🎉 SUCCESS: Database enrichment complete.")
             break
 
-        logging.info(f"Processing Batch: {len(fixtures)} matches remaining...")
-        for fid in fixtures:
-            details = fetch_match_details(fid)
-            if details:
-                database.update_match_stats(fid, details)
-                logging.info(f"✅ Enriched Fixture {fid}")
-            else:
-                # Mark as 'Processed with 0' to avoid infinite loops if API has no data
-                database.update_match_stats(fid, {'home_shots': 0})
+        logging.info(f"🚀 Processing Batch of {len(fixtures)} matches in Parallel...")
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_fid = {executor.submit(fetch_match_details, fid): fid for fid in fixtures}
             
-            time.sleep(1.5) # Protect your API Key from being banned
+            for future in as_completed(future_to_fid):
+                fid, stats = future.result()
+                if stats:
+                    database.update_match_stats(fid, stats)
+                    logging.info(f"✅ Enriched {fid}")
+                else:
+                    # Mark processed to avoid retrying failed API matches
+                    database.update_match_stats(fid, {'home_shots': 0})
+                
+                # Small delay to keep the overall rate under control
+                time.sleep(0.2)
 
 if __name__ == "__main__":
     database.init_db()
     
     # 1. Standard Fetch
-    logging.info("Standard incremental fetch starting...")
+    logging.info("Starting incremental fetch...")
     for name, lid in LEAGUES.items():
         for season in SEASONS:
             last_date = database.get_latest_match_date(lid, season)
@@ -80,7 +85,7 @@ if __name__ == "__main__":
             
             res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params=params).json()
             database.save_matches_to_db(res.get('response', []), season)
-            time.sleep(1.2)
+            time.sleep(1)
 
-    # 2. FULL Enrichment (No more 100 limit!)
-    enrich_database_fully()
+    # 2. PARALLEL Enrichment (5x speed boost!)
+    enrich_database_parallel(max_workers=5)
