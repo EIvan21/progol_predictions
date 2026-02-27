@@ -1,7 +1,34 @@
+# Python environment
 venv/
-.env
-data/raw/
-data/processed/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# Project Data
+data/
 logs/
 models/
 reports/
+*.json
+!requirements.txt
+!config.py
+
+# Environment
+.env
+.venv
+.vscode/
+.idea/
