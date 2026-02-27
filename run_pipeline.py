@@ -17,11 +17,12 @@ def get_user_input():
     is_local = (mode_choice == '1')
     
     # 2. Weighting Strategy
-    print("\nSelect Weighting Strategy for Form Stats:")
+    print("\nSelect Feature Engineering Strategy:")
     print("  [0] FLAT (Matches count equally)")
     print("  [1] TEMPORAL (More weight by Match DATE)")
-    print("  [2] ORDINAL (More weight by Match SEQUENCE/SHIFT)")
-    strategy_choice = input("Choice (0, 1, or 2): ")
+    print("  [2] ORDINAL (More weight by Match SEQUENCE)")
+    print("  [3] CONTEXTUAL (Home/Away specific, Clean Sheets, H2H)")
+    strategy_choice = input("Choice (0, 1, 2, or 3): ")
     strategy = int(strategy_choice)
     
     # Update config and set environment variables for sub-processes
@@ -29,7 +30,7 @@ def get_user_input():
     os.environ['WEIGHT_STRATEGY'] = str(strategy)
     
     mode_str = "LOCAL TEST (10%)" if is_local else "PRODUCTION (100%)"
-    strategy_names = {0: "FLAT", 1: "TEMPORAL", 2: "ORDINAL"}
+    strategy_names = {0: "FLAT", 1: "TEMPORAL", 2: "ORDINAL", 3: "CONTEXTUAL"}
     print(f"\n🚀 STARTING {mode_str} with {strategy_names[strategy]} strategy...")
 
 def run_step(script_name, description):

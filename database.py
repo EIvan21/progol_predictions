@@ -88,3 +88,29 @@ def get_all_matches_df():
     df = pd.read_sql_query("SELECT * FROM matches WHERE status = 'FT'", conn)
     conn.close()
     return df
+
+def get_h2h_stats(team1_id, team2_id, current_date):
+    """Calculates historical H2H results between two teams before a specific date."""
+    conn = get_connection()
+    query = '''
+        SELECT goals_home, goals_away, home_id 
+        FROM matches 
+        WHERE status = 'FT' 
+        AND date < ? 
+        AND ((home_id = ? AND away_id = ?) OR (home_id = ? AND away_id = ?))
+    '''
+    df = pd.read_sql_query(query, conn, params=(current_date, team1_id, team2_id, team2_id, team1_id))
+    conn.close()
+    
+    if df.empty:
+        return 0.33, 0.33, 0.33 # Equal probability if no history
+        
+    def get_res(row):
+        if row['goals_home'] == row['goals_away']: return 'D'
+        if row['home_id'] == team1_id:
+            return 'W' if row['goals_home'] > row['goals_away'] else 'L'
+        else:
+            return 'W' if row['goals_away'] > row['goals_home'] else 'L'
+            
+    results = df.apply(get_res, axis=1).value_counts(normalize=True)
+    return results.get('W', 0), results.get('D', 0), results.get('L', 0)
