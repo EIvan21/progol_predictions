@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import logging
-from sklearn.preprocessing import LabelEncoder
+from category_encoders import TargetEncoder
 import config
 import database
 
@@ -17,63 +17,60 @@ def get_target(row):
     elif row['goals_home'] == row['goals_away']: return 1
     else: return 2
 
-def calculate_elite_features(df):
-    logging.info("Applying Strategy 3: Elite Contextual Engineering...")
+def calculate_hyper_features(df):
+    logging.info("Applying Strategy 5: Hyper-Ensemble Engineering...")
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
-    # 1. Basic Team Stats
+    # 1. Base Team Data
     home = df[['fixture_id', 'date', 'league_id', 'home_id', 'goals_home', 'goals_away', 'away_id']].copy()
     away = df[['fixture_id', 'date', 'league_id', 'away_id', 'goals_away', 'goals_home', 'home_id']].copy()
     home.columns = ['fixture_id', 'date', 'league_id', 'team_id', 'gf', 'ga', 'opp_id']
     away.columns = ['fixture_id', 'date', 'league_id', 'team_id', 'gf', 'ga', 'opp_id']
     team_stats = pd.concat([home, away]).sort_values(['team_id', 'date'])
     
-    # 2. ADVANCED: Opponent Strength (Elo Proxy)
-    # We define a "Power Score" based on win rate in last 10 games
+    # 2. Power Score (Elo Proxy)
     group = team_stats.groupby('team_id')
     team_stats['is_win'] = (team_stats['gf'] > team_stats['ga']).astype(int)
     team_stats['power_score'] = group['is_win'].transform(lambda x: x.shift().rolling(10, min_periods=1).mean()).fillna(0.3)
     
-    # 3. Strength-Adjusted Goals
-    # Merge opponent power score back to adjust goals
-    team_stats = team_stats.merge(
-        team_stats[['fixture_id', 'team_id', 'power_score']], 
-        left_on=['fixture_id', 'opp_id'], 
-        right_on=['fixture_id', 'team_id'], 
-        suffixes=('', '_opp')
-    ).drop(columns=['team_id_opp'])
-    
+    # 3. Contextual Adjustment
+    team_stats = team_stats.merge(team_stats[['fixture_id', 'team_id', 'power_score']], left_on=['fixture_id', 'opp_id'], right_on=['fixture_id', 'team_id'], suffixes=('', '_opp')).drop(columns=['team_id_opp'])
     team_stats['adj_gf'] = team_stats['gf'] * (1 + team_stats['power_score_opp'])
     team_stats['adj_ga'] = team_stats['ga'] * (2 - team_stats['power_score_opp'])
     
-    # 4. Final Rolling Features
+    # 4. Rolling Stats
     group = team_stats.groupby('team_id')
-    team_stats['roll_adj_gf'] = group['adj_gf'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
-    team_stats['roll_adj_ga'] = group['adj_ga'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
-    team_stats['clean_sheet_rate'] = group['ga'].transform(lambda x: (x.shift() == 0).rolling(5, min_periods=1).mean())
-    team_stats['days_rest'] = group['date'].transform(lambda x: x.diff().dt.days.shift())
+    team_stats['roll_gf'] = group['adj_gf'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
+    team_stats['roll_ga'] = group['adj_ga'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean())
+    team_stats['cs_rate'] = group['ga'].transform(lambda x: (x.shift() == 0).rolling(5, min_periods=1).mean())
+    
+    # 5. League Home Advantage Factor
+    league_ha = df.groupby('league_id').apply(lambda x: (x['goals_home'] > x['goals_away']).mean()).to_dict()
+    df['league_ha_factor'] = df['league_id'].map(league_ha)
 
-    # 5. Merge stats back to Match-Level
+    # 6. Merge stats back
     match_stats = df.copy()
     for suffix in ['home', 'away']:
         tid = 'home_id' if suffix == 'home' else 'away_id'
-        cols = ['fixture_id', 'team_id', 'roll_adj_gf', 'roll_adj_ga', 'clean_sheet_rate', 'power_score', 'days_rest']
+        cols = ['fixture_id', 'team_id', 'roll_gf', 'roll_ga', 'cs_rate', 'power_score']
         match_stats = match_stats.merge(team_stats[cols], left_on=['fixture_id', tid], right_on=['fixture_id', 'team_id'], suffixes=('', f'_{suffix}'))
         match_stats = match_stats.drop(columns=['team_id'])
 
-    return match_stats.rename(columns={'roll_adj_gf': 'roll_adj_gf_home', 'roll_adj_ga': 'roll_adj_ga_home', 'clean_sheet_rate': 'clean_sheet_rate_home', 'power_score': 'power_score_home', 'days_rest': 'days_rest_home'})
+    # 7. HIGH-SIGNAL TARGET ENCODING (Replaces Label Encoding)
+    logging.info("Applying Target Encoding to Venue and Referee...")
+    encoder = TargetEncoder(cols=['venue', 'referee', 'league_id'])
+    # We fit on historical data to avoid leakage
+    match_stats['venue_encoded'] = encoder.fit_transform(match_stats['venue'], match_stats['target'])
+    match_stats['ref_encoded'] = encoder.fit_transform(match_stats['referee'], match_stats['target'])
+    
+    return match_stats.rename(columns={'roll_gf': 'roll_gf_home', 'roll_ga': 'roll_ga_home', 'cs_rate': 'cs_rate_home', 'power_score': 'power_score_home'})
 
 def process_matches_from_db():
     df = database.get_all_matches_df()
-    if config.IS_LOCAL_TEST:
-        df = df.sample(n=config.get_data_limit(len(df)), random_state=42)
-
+    if config.IS_LOCAL_TEST: df = df.sample(n=config.get_data_limit(len(df)), random_state=42)
     df['target'] = df.apply(get_target, axis=1)
-    df = calculate_elite_features(df)
-    
-    for col in ['venue', 'referee', 'league_id']:
-        df[col] = LabelEncoder().fit_transform(df[col].astype(str))
+    df = calculate_hyper_features(df)
     return df
 
 if __name__ == "__main__":
@@ -81,4 +78,4 @@ if __name__ == "__main__":
     df = process_matches_from_db()
     if not df.empty:
         df.to_csv(os.path.join(config.PROCESSED_DATA_DIR, "final_train_data.csv"), index=False)
-        logging.info("SUCCESS: Elite Preprocessing complete.")
+        logging.info("SUCCESS: Hyper-Ensemble Preprocessing complete.")

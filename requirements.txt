@@ -15,3 +15,5 @@ matplotlib
 seaborn
 fpdf2
 imbalanced-learn
+optuna
+category_encoders

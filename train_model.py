@@ -2,11 +2,12 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 from catboost import CatBoostClassifier
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, GridSearchCV, StratifiedKFold
-from sklearn.metrics import accuracy_score, classification_report
-from imblearn.over_sampling import SMOTE
+from sklearn.model_selection import train_test_split, TimeSeriesSplit
+from sklearn.metrics import accuracy_score
+import optuna
 import os
 import json
 import logging
@@ -18,29 +19,36 @@ logging.basicConfig(
     handlers=[logging.FileHandler("logs/train_model.log"), logging.StreamHandler()]
 )
 
+MODEL_PATH = 'models/progol_stack_model.bin'
 METRICS_PATH = 'models/metrics.json'
-ENSEMBLE_PATH = 'models/ensemble_models.pkl'
 SCALER_PATH = 'models/scaler.pkl'
 DATA_PATH = 'data/processed/final_train_data.csv'
 
-def tune_and_fit_elite(model_name, X, y, cv):
-    logging.info(f"💎 ELITE TUNING: {model_name}...")
-    if model_name == 'XGBoost':
-        param = {'max_depth': [5, 7], 'learning_rate': [0.05, 0.1], 'n_estimators': [500]}
-        grid = GridSearchCV(xgb.XGBClassifier(random_state=42), param, cv=cv, scoring='f1_macro', n_jobs=-1)
-    elif model_name == 'RandomForest':
-        param = {'max_depth': [12, 15], 'min_samples_leaf': [5, 10], 'n_estimators': [300]}
-        grid = GridSearchCV(RandomForestClassifier(random_state=42), param, cv=cv, scoring='f1_macro', n_jobs=-1)
-    elif model_name == 'CatBoost':
-        return CatBoostClassifier(iterations=1000, learning_rate=0.05, depth=6, verbose=0, auto_class_weights='Balanced').fit(X, y)
-    
-    grid.fit(X, y)
-    return grid.best_estimator_
+def objective_xgb(trial, X, y):
+    param = {
+        'n_estimators': 300,
+        'max_depth': trial.suggest_int('max_depth', 3, 9),
+        'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.1),
+        'subsample': trial.suggest_float('subsample', 0.6, 0.9),
+        'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 0.9),
+    }
+    model = xgb.XGBClassifier(**param, random_state=42)
+    # Use TimeSeriesSplit for realistic sports validation
+    tscv = TimeSeriesSplit(n_splits=3)
+    scores = []
+    for train_idx, val_idx in tscv.split(X):
+        X_t, X_v = X.iloc[train_idx], X.iloc[val_idx]
+        y_t, y_v = y.iloc[train_idx], y.iloc[val_idx]
+        model.fit(X_t, y_t)
+        scores.append(accuracy_score(y_v, model.predict(X_v)))
+    return np.mean(scores)
 
 def train_progol_model(df):
-    model_type = os.getenv('MODEL_TYPE', 'Ensemble')
-    exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name', 'goals_home', 'goals_away', 'year', 'total_goals', 'opp_id', 'is_win']
-    features = [c for c in df.columns if c in ['league_id', 'venue', 'referee', 'roll_adj_gf_home', 'roll_adj_ga_home', 'clean_sheet_rate_home', 'power_score_home', 'days_rest_home', 'roll_adj_gf_away', 'roll_adj_ga_away', 'clean_sheet_rate_away', 'power_score_away', 'days_rest_away']]
+    logging.info("--- 🏆 STARTING HYPER-ENSEMBLE STACKING ---")
+    
+    features = ['league_id', 'league_ha_factor', 'venue_encoded', 'ref_encoded', 
+                'roll_gf_home', 'roll_ga_home', 'cs_rate_home', 'power_score_home',
+                'roll_gf_away', 'roll_ga_away', 'cs_rate_away', 'power_score_away']
     
     df = df.dropna(subset=features + ['target'])
     X, y = df[features], df['target']
@@ -49,39 +57,45 @@ def train_progol_model(df):
     X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=features)
     with open(SCALER_PATH, 'wb') as f: pickle.dump(scaler, f)
     
-    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42, stratify=y)
+    # 1. OPTUNA BAYESIAN OPTIMIZATION (For the primary model)
+    logging.info("Optimizing XGBoost via Bayesian Search...")
+    study = optuna.create_study(direction='maximize')
+    study.optimize(lambda trial: objective_xgb(trial, X_scaled, y), n_trials=20)
+    best_params = study.best_params
+    logging.info(f"Best XGB Params: {best_params}")
+
+    # 2. MODEL STACKING (The ultimate ensemble)
+    base_models = [
+        ('xgb', xgb.XGBClassifier(**best_params, random_state=42)),
+        ('rf', RandomForestClassifier(n_estimators=300, max_depth=12, random_state=42)),
+        ('cat', CatBoostClassifier(iterations=500, silent=True, auto_class_weights='Balanced'))
+    ]
     
-    # BALANCING: Use SMOTE to help with the "Draw" class
-    smote = SMOTE(random_state=42)
-    X_train_bal, y_train_bal = smote.fit_resample(X_train, y_train)
-    logging.info(f"Balanced Dataset: {len(X_train_bal)} samples.")
-
-    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
-    models = {}
+    stack_model = StackingClassifier(
+        estimators=base_models,
+        final_estimator=LogisticRegression(),
+        cv=TimeSeriesSplit(n_splits=3),
+        stack_method='predict_proba',
+        n_jobs=-1
+    )
     
-    if model_type == 'Ensemble':
-        all_probs = []
-        for m_name in ['XGBoost', 'RandomForest', 'CatBoost']:
-            m = tune_and_fit_elite(m_name, X_train_bal, y_train_bal, cv)
-            models[m_name] = m
-            all_probs.append(m.predict_proba(X_test))
-        with open(ENSEMBLE_PATH, 'wb') as f: pickle.dump(models, f)
-        y_pred = np.argmax(np.mean(all_probs, axis=0), axis=1)
-    else:
-        model = tune_and_fit_elite(model_type, X_train_bal, y_train_bal, cv)
-        model.fit(X_train_bal, y_train_bal)
-        models[model_type] = model
-        with open('models/progol_model.bin', 'wb') as f: pickle.dump(model, f)
-        y_pred = model.predict(X_test)
-
-    acc = accuracy_score(y_test, y_pred)
-    report = classification_report(y_test, y_pred, output_dict=True)
-    m_main = models.get('XGBoost') or list(models.values())[0]
-    feat_imp = dict(zip(features, [float(x) for x in getattr(m_main, 'feature_importances_', np.zeros(len(features)))]))
-
-    metrics = {"model_type": model_type, "accuracy": acc, "classification_report": report, "features": features, "feature_importance": feat_imp}
+    logging.info("Training Meta-Stacker...")
+    X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, shuffle=False)
+    stack_model.fit(X_train, y_train)
+    
+    acc = accuracy_score(y_test, stack_model.predict(X_test))
+    logging.info(f"🔥 FINAL STACKED ACCURACY: {acc:.4f}")
+    
+    metrics = {
+        "model_type": "StackedEnsemble",
+        "accuracy": acc,
+        "best_xgb_params": best_params,
+        "features": features
+    }
+    
     with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
-    logging.info(f"💎 SUCCESS: Elite Accuracy {acc:.4f}")
+    with open(MODEL_PATH, 'wb') as f: pickle.dump(stack_model, f)
+    
     return metrics
 
 if __name__ == "__main__":
