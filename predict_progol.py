@@ -39,6 +39,7 @@ def fetch_match_context(match_id):
         
         return {
             'league_id': match['league']['id'],
+            'season': match['league']['season'],
             'venue': hash(match['fixture']['venue']['name'] or "Unknown") % 1000,
             'referee': hash(match['fixture']['referee'] or "Unknown") % 1000,
             'roll_gf_home': h_stats[0], 'roll_ga_home': h_stats[1], 'clean_sheet_rate_home': h_stats[2],
@@ -46,7 +47,7 @@ def fetch_match_context(match_id):
             'days_rest_home': 7, 'days_rest_away': 7, 'h2h_home_win_rate': 0.33
         }
     except Exception as e:
-        print(f"Error: {e}"); return None
+        print(f"Error fetching match data: {e}"); return None
 
 def predict_progol(match_ids):
     if not os.path.exists(METRICS_PATH): return
@@ -68,8 +69,13 @@ def predict_progol(match_ids):
     for mid in match_ids:
         data = fetch_match_context(mid)
         if data:
-            # Ensure feature order and names match training
-            X = pd.DataFrame([data])[FEATURES]
+            # Ensure all features exist in the fetched data
+            df_input = pd.DataFrame([data])
+            for col in FEATURES:
+                if col not in df_input.columns:
+                    df_input[col] = 0
+            
+            X = df_input[FEATURES]
             X_scaled = scaler.transform(X)
             
             all_probs = []

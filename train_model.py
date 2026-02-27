@@ -26,23 +26,23 @@ DATA_PATH = 'data/processed/final_train_data.csv'
 
 def get_model(model_type):
     if model_type == 'XGBoost':
-        return xgb.XGBClassifier(n_estimators=300, learning_rate=0.05, max_depth=5, random_state=42)
+        return xgb.XGBClassifier(n_estimators=500, learning_rate=0.05, max_depth=6, random_state=42)
     elif model_type == 'RandomForest':
-        return RandomForestClassifier(n_estimators=200, max_depth=8, random_state=42, class_weight='balanced')
+        return RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42, class_weight='balanced')
     elif model_type == 'CatBoost':
-        return CatBoostClassifier(iterations=300, learning_rate=0.05, depth=5, random_seed=42, verbose=0)
+        return CatBoostClassifier(iterations=500, learning_rate=0.05, depth=6, random_seed=42, verbose=0)
     elif model_type == 'NeuralNetwork':
-        return MLPClassifier(hidden_layer_sizes=(32, 16), max_iter=200, random_state=42)
+        return MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=300, random_state=42)
 
 def train_progol_model(df):
     model_type = os.getenv('MODEL_TYPE', 'XGBoost')
     logging.info(f"--- 🧠 TRAINING ARCHITECTURE: {model_type} ---")
     
-    # CRITICAL: Prevent Data Leakage by excluding goals and IDs
+    # Exclude IDs and target results to prevent leakage
     exclude = [
         'fixture_id', 'date', 'target', 'home_id', 'away_id', 
         'home_name', 'away_name', 'status', 'league_name',
-        'goals_home', 'goals_away', 'total_goals', 'result'
+        'goals_home', 'goals_away'
     ]
     features = [c for c in df.columns if c not in exclude]
     df = df.dropna(subset=features + ['target'])
@@ -57,21 +57,31 @@ def train_progol_model(df):
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42, stratify=y)
     
     models = {}
+    feat_importance = {}
+
     if model_type == 'Ensemble':
-        for m_name in ['XGBoost', 'RandomForest', 'CatBoost', 'NeuralNetwork']:
+        all_probs = []
+        for m_name in ['XGBoost', 'RandomForest', 'CatBoost']:
             logging.info(f"Training {m_name}...")
             m = get_model(m_name)
             m.fit(X_train, y_train)
             models[m_name] = m
+            all_probs.append(m.predict_proba(X_test))
+            # Save importance from the first tree model (XGBoost)
+            if m_name == 'XGBoost':
+                feat_importance = dict(zip(features, [float(x) for x in m.feature_importances_]))
+        
         with open(ENSEMBLE_PATH, 'wb') as f: pickle.dump(models, f)
-        probs = np.mean([m.predict_proba(X_test) for m in models.values()], axis=0)
-        y_pred = np.argmax(probs, axis=1)
+        final_probs = np.mean(all_probs, axis=0)
+        y_pred = np.argmax(final_probs, axis=1)
     else:
         model = get_model(model_type)
         model.fit(X_train, y_train)
         models[model_type] = model
         with open(MODEL_PATH, 'wb') as f: pickle.dump(model, f)
         y_pred = model.predict(X_test)
+        if hasattr(model, 'feature_importances_'):
+            feat_importance = dict(zip(features, [float(x) for x in model.feature_importances_]))
 
     acc = accuracy_score(y_test, y_pred)
     report = classification_report(y_test, y_pred, output_dict=True)
@@ -81,7 +91,7 @@ def train_progol_model(df):
         "accuracy": acc,
         "classification_report": report,
         "features": features,
-        "best_params": "Standard Set"
+        "feature_importance": feat_importance
     }
     
     with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
