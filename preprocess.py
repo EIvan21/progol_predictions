@@ -14,11 +14,10 @@ def get_target(row):
     else: return 2
 
 def calculate_full_features(df):
-    logging.info("🚀 Calculating Full Feature Set (Stats + Context + Power Score)...")
+    logging.info("🚀 Calculating Full Feature Set with Safe Defaults...")
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
-    # 1. Team-Level Processing
     h = df[['fixture_id', 'date', 'league_id', 'home_id', 'goals_home', 'goals_away', 'home_shots', 'home_possession', 'home_corners']].copy()
     a = df[['fixture_id', 'date', 'league_id', 'away_id', 'goals_away', 'goals_home', 'away_shots', 'away_possession', 'away_corners']].copy()
     h.columns = ['fixture_id', 'date', 'league_id', 'team_id', 'gf', 'ga', 'shots', 'poss', 'corners']
@@ -27,20 +26,19 @@ def calculate_full_features(df):
     team_stats = pd.concat([h, a]).sort_values(['team_id', 'date'])
     group = team_stats.groupby('team_id')
     
-    # POWER SCORE (Elo Proxy)
     team_stats['is_win'] = (team_stats['gf'] > team_stats['ga']).astype(int)
     team_stats['power_score'] = group['is_win'].transform(lambda x: x.shift().rolling(10, min_periods=1).mean()).fillna(0.3)
     
-    # ROLLING STATS (Window=5)
     for col in ['gf', 'ga', 'shots', 'poss', 'corners']:
+        # min_periods=1 ensures we get a value even if we only have 1 game of history
         team_stats[f'roll_{col}'] = group[col].transform(lambda x: x.shift().rolling(5, min_periods=1).mean()).fillna(0)
     
     team_stats['cs_rate'] = group['ga'].transform(lambda x: (x.shift() == 0).rolling(5, min_periods=1).mean()).fillna(0)
-    team_stats['days_rest'] = group['date'].transform(lambda x: x.diff().dt.days.shift())
+    team_stats['days_rest'] = group['date'].transform(lambda x: x.diff().dt.days.shift()).fillna(7)
 
     # 2. League Home Advantage Factor
     ha_map = df.groupby('league_id').apply(lambda x: (x['goals_home'] > x['goals_away']).mean(), include_groups=False).to_dict()
-    df['league_ha_factor'] = df['league_id'].map(ha_map)
+    df['league_ha_factor'] = df['league_id'].map(ha_map).fillna(0.45)
 
     # 3. Merge Back
     match_stats = df.copy()
@@ -51,9 +49,13 @@ def calculate_full_features(df):
         match_stats = match_stats.drop(columns=['team_id'])
 
     # 4. Target Encoding
-    logging.info("Applying Target Encoding to Venue and Referee...")
+    logging.info("Applying Target Encoding...")
     encoder = TargetEncoder(cols=['venue', 'referee'])
+    # Handle cases where some venues/refs only appear once
     match_stats[['venue_encoded', 'ref_encoded']] = encoder.fit_transform(match_stats[['venue', 'referee']], match_stats['target'])
+    
+    # FINAL SAFETY CHECK: Fill any remaining NaNs with global means
+    match_stats = match_stats.fillna(match_stats.mean(numeric_only=True))
     
     return match_stats.rename(columns={
         'roll_gf': 'roll_gf_home', 'roll_ga': 'roll_ga_home', 'roll_shots': 'roll_shots_home', 
@@ -63,8 +65,8 @@ def calculate_full_features(df):
 
 def process_matches_from_db():
     df = database.get_all_matches_df()
-    df = df.dropna(subset=['home_shots']) # Only use matches with full stats
-    logging.info(f"Processing {len(df)} matches with full statistical depth.")
+    # If a match is missing stats, we now keep it but it will use 0 as a baseline
+    logging.info(f"Processing all {len(df)} matches from database.")
     
     df['target'] = df.apply(get_target, axis=1)
     df = calculate_full_features(df)
