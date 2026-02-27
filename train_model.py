@@ -15,8 +15,8 @@ import pickle
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-MODEL_PATH = 'models/progol_stack_model.bin'
 METRICS_PATH = 'models/metrics.json'
+MODEL_PATH = 'models/progol_stack_model.bin'
 SCALER_PATH = 'models/scaler.pkl'
 DATA_PATH = 'data/processed/final_train_data.csv'
 
@@ -31,7 +31,7 @@ def objective_xgb(trial, X, y):
     return np.mean(scores)
 
 def train_progol_model(df):
-    logging.info("--- 🏆 STARTING HYPER-ENSEMBLE TRAINING ---")
+    logging.info("--- 🏆 STARTING FINAL PRODUCTION TRAINING ---")
     exclude = ['fixture_id', 'date', 'target', 'home_id', 'away_id', 'home_name', 'away_name', 'status', 'league_name', 'goals_home', 'goals_away', 'total_goals', 'result', 'year', 'venue', 'referee']
     features = [c for c in df.columns if c not in exclude]
     df = df.dropna(subset=['target']); X = df[features].fillna(0); y = df['target']
@@ -47,8 +47,8 @@ def train_progol_model(df):
     best_xgb = xgb.XGBClassifier(**study.best_params, random_state=42)
     base_models = [
         ('xgb', best_xgb),
-        ('rf', RandomForestClassifier(n_estimators=200, max_depth=10, random_state=42, class_weight='balanced')),
-        ('cat', CatBoostClassifier(iterations=300, silent=True, auto_class_weights='Balanced'))
+        ('rf', RandomForestClassifier(n_estimators=300, max_depth=12, random_state=42, class_weight='balanced')),
+        ('cat', CatBoostClassifier(iterations=500, silent=True, auto_class_weights='Balanced'))
     ]
     
     stack_model = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=StratifiedKFold(n_splits=3, shuffle=True, random_state=42), stack_method='predict_proba', n_jobs=-1)
@@ -56,24 +56,33 @@ def train_progol_model(df):
     X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.15, random_state=42, stratify=y)
     stack_model.fit(X_train, y_train)
     
-    # EXTRACT FEATURE IMPORTANCE (From the tuned XGBoost component)
+    # IMPORTANT: Re-train the tuned XGBoost on full set to get Importance for the report
     best_xgb.fit(X_train, y_train)
-    feat_imp = dict(zip(features, [float(x) for x in best_xgb.feature_importances_]))
+    feat_imp = {f: float(i) for f, i in zip(features, best_xgb.feature_importances_)}
 
-    acc = accuracy_score(y_test, stack_model.predict(X_test))
-    report = classification_report(y_test, stack_model.predict(X_test), output_dict=True)
+    y_pred = stack_model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    report = classification_report(y_test, y_pred, output_dict=True)
     
     metrics = {
-        "model_type": "StackedEnsemble",
+        "model_type": "StackedEnsemble_Final",
         "accuracy": acc,
         "features": features,
         "feature_importance": feat_imp,
-        "classification_report": report
+        "classification_report": report,
+        "best_xgb_params": study.best_params
     }
     
     with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
     with open(MODEL_PATH, 'wb') as f: pickle.dump(stack_model, f)
-    logging.info(f"🔥 FINAL ACCURACY: {acc:.4f}")
+    
+    print("\n" + "="*30)
+    print(f"MODEL PERFORMANCE METRICS")
+    print("="*30)
+    print(f"Accuracy:  {acc:.4f}")
+    print(f"F1-Macro:  {report['macro avg']['f1-score']:.4f}")
+    print("="*30 + "\n")
+    
     return metrics
 
 if __name__ == "__main__":
