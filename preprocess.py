@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import os
 import logging
-from category_encoders import TargetEncoder
 import config
 import database
 import features
@@ -19,48 +18,41 @@ def calculate_alpha_features(df):
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
-    # 1. Base Signals (Elo & Rolling)
     df = features.calculate_elo_ratings(df)
     df = features.add_rolling_features(df)
     
-    # 2. xG Signals (Rolling averages of our new xG column)
+    # xG Signals
     h_xg = df[['fixture_id', 'date', 'home_id', 'home_xg']].rename(columns={'home_id': 'team_id', 'home_xg': 'xg'})
     a_xg = df[['fixture_id', 'date', 'away_id', 'away_xg']].rename(columns={'away_id': 'team_id', 'away_xg': 'xg'})
     xg_stats = pd.concat([h_xg, a_xg]).sort_values(['team_id', 'date'])
     xg_stats['roll_xg'] = xg_stats.groupby('team_id')['xg'].transform(lambda x: x.shift().rolling(5, min_periods=1).mean()).fillna(0)
     
-    # Merge xG back
     df = df.merge(xg_stats[['fixture_id', 'team_id', 'roll_xg']], left_on=['fixture_id', 'home_id'], right_on=['fixture_id', 'team_id'], suffixes=('', '_h')).drop(columns=['team_id'])
     df = df.merge(xg_stats[['fixture_id', 'team_id', 'roll_xg']], left_on=['fixture_id', 'away_id'], right_on=['fixture_id', 'team_id'], suffixes=('_h', '_a')).drop(columns=['team_id'])
     
-    # 3. Market Differentials
-    # We turn Odds into Probabilities: Prob = 1/Odd
     df['prob_market_h'] = (1 / df['odds_home']).fillna(0.4)
     df['prob_market_d'] = (1 / df['odds_draw']).fillna(0.25)
     df['prob_market_a'] = (1 / df['odds_away']).fillna(0.35)
     
-    # 4. Final Differentials
     df['xg_diff'] = df['roll_xg_h'] - df['roll_xg_a']
     df['elo_diff'] = df['elo_home'] - df['elo_away']
-    
-    # Context
     df['target'] = df.apply(get_target, axis=1)
-    encoder = TargetEncoder(cols=['venue', 'referee'])
-    df[['venue_enc', 'ref_enc']] = encoder.fit_transform(df[['venue', 'referee']], df['target'])
     
+    # DIFFERENTIAL FORM
+    df['form_diff'] = df['roll_form_home'] - df['roll_form_away']
+    
+    # KEEP Raw Columns for Shielded Training (venue, referee)
     final_cols = [
-        'fixture_id', 'date', 'target', 'league_id', 
-        'xg_diff', 'elo_diff', 'prob_market_h', 'prob_market_d', 'prob_market_a',
-        'venue_enc', 'ref_enc'
+        'fixture_id', 'date', 'target', 'league_id', 'venue', 'referee',
+        'xg_diff', 'elo_diff', 'form_diff', 'prob_market_h', 'prob_market_d', 'prob_market_a'
     ]
     
     return df[final_cols].fillna(0)
 
 def process_matches_from_db():
     df = database.get_all_matches_df()
-    # Ensure we only use data that has been enriched
-    df = df.dropna(subset=['odds_home'])
-    logging.info(f"Processing {len(df)} High-Signal Matches.")
+    # During initial fetch, odds might be NULL, we'll keep them but use defaults
+    logging.info(f"Processing {len(df)} matches from database.")
     return calculate_alpha_features(df)
 
 if __name__ == "__main__":
