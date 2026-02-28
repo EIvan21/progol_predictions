@@ -14,7 +14,7 @@ def get_target(row):
     else: return 2
 
 def calculate_alpha_features(df):
-    logging.info("🚀 Applying Strategy 9: Market Alpha & xG Engine...")
+    logging.info("🚀 Applying Strategy 9: Market Alpha & xG Engine (Inf-Shield Active)...")
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
@@ -30,28 +30,34 @@ def calculate_alpha_features(df):
     df = df.merge(xg_stats[['fixture_id', 'team_id', 'roll_xg']], left_on=['fixture_id', 'home_id'], right_on=['fixture_id', 'team_id'], suffixes=('', '_h')).drop(columns=['team_id'])
     df = df.merge(xg_stats[['fixture_id', 'team_id', 'roll_xg']], left_on=['fixture_id', 'away_id'], right_on=['fixture_id', 'team_id'], suffixes=('_h', '_a')).drop(columns=['team_id'])
     
-    df['prob_market_h'] = (1 / df['odds_home']).fillna(0.4)
+    # 🛑 FIX: Prevent division by zero/inf in Odds
+    for col in ['odds_home', 'odds_draw', 'odds_away']:
+        df[col] = df[col].replace(0, np.nan) # Turn 0 into NaN
+    
+    df['prob_market_h'] = (1 / df['odds_home']).fillna(0.45)
     df['prob_market_d'] = (1 / df['odds_draw']).fillna(0.25)
-    df['prob_market_a'] = (1 / df['odds_away']).fillna(0.35)
+    df['prob_market_a'] = (1 / df['odds_away']).fillna(0.30)
     
     df['xg_diff'] = df['roll_xg_h'] - df['roll_xg_a']
     df['elo_diff'] = df['elo_home'] - df['elo_away']
-    df['target'] = df.apply(get_target, axis=1)
-    
-    # DIFFERENTIAL FORM
     df['form_diff'] = df['roll_form_home'] - df['roll_form_away']
     
-    # KEEP Raw Columns for Shielded Training (venue, referee)
+    df['target'] = df.apply(get_target, axis=1)
+    
     final_cols = [
         'fixture_id', 'date', 'target', 'league_id', 'venue', 'referee',
         'xg_diff', 'elo_diff', 'form_diff', 'prob_market_h', 'prob_market_d', 'prob_market_a'
     ]
     
-    return df[final_cols].fillna(0)
+    processed = df[final_cols].fillna(0)
+    
+    # 🛑 FINAL INF SHIELD: Replace any lingering infinity with 0
+    processed = processed.replace([np.inf, -np.inf], 0)
+    
+    return processed
 
 def process_matches_from_db():
     df = database.get_all_matches_df()
-    # During initial fetch, odds might be NULL, we'll keep them but use defaults
     logging.info(f"Processing {len(df)} matches from database.")
     return calculate_alpha_features(df)
 
