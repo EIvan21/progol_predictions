@@ -35,40 +35,49 @@ def get_latest_progol_post_url():
     try:
         res = requests.get(PROGOL_CAT_URL, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
-        # 🛑 FIX: Ensure we only pick links that look like posts, excluding images
         all_links = soup.find_all('a', href=True)
         for link in all_links:
             href = link['href']
-            # Must contain 'progol-', digits, and NOT end in image extension
+            # Search for patterns like pronostico-progol-2322/ or progol-2322/
             if re.search(r'progol-\d+/?$', href) and not any(ext in href for ext in ['.png', '.jpg', '.jpeg', '.svg']):
                 return href
     except: pass
     return PROGOL_CAT_URL
 
-def scrape_official_table(url):
-    logging.info(f"Scraping official table from: {url}")
+def scrape_flexible_slate(url):
+    logging.info(f"Scraping official slate from: {url}")
     headers = {'User-Agent': 'Mozilla/5.0'}
     matches = []
     try:
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 🎯 STRATEGY: Progol posts have tables with specific text like 'vs'
+        # 1. Try Table Strategy first
         tables = soup.find_all('table')
         for table in tables:
             rows = table.find_all('tr')
             for row in rows:
                 cols = row.find_all('td')
                 if len(cols) >= 3:
-                    t1 = cols[0].get_text(strip=True)
-                    t2 = cols[-1].get_text(strip=True)
-                    # Filter out header rows
+                    t1, t2 = cols[0].get_text(strip=True), cols[-1].get_text(strip=True)
                     if len(t1) > 2 and len(t2) > 2 and "VS" not in t1.upper() and "PARTIDO" not in t1.upper():
-                        # Clean any date/time junk (e.g., 'JUAREZ 21:00' -> 'JUAREZ')
-                        t1 = re.split(r'(\d|:)', t1)[0].strip()
-                        t2 = re.split(r'(\d|:)', t2)[0].strip()
+                        t1, t2 = re.split(r'(\d|:)', t1)[0].strip(), re.split(r'(\d|:)', t2)[0].strip()
                         matches.append((t1, t2))
             if len(matches) >= 14: break
+            
+        # 2. Fallback to Paragraph Regex Strategy if table was empty
+        if not matches:
+            content = soup.get_text("\n")
+            # Look for "TEAM A vs TEAM B"
+            patterns = re.findall(r'([A-ZÁÉÍÓÚÑ0-9\s\.\-]+)\s+vs\s+([A-ZÁÉÍÓÚÑ0-9\s\.\-]+)', content)
+            for h, a in patterns:
+                h = h.strip().split('\n')[-1].strip()
+                # Remove date/time from away team (split by dash or numbers)
+                a = re.split(r'[\u2013\-\|0-9]', a)[0].strip()
+                if len(h) > 1 and len(a) > 1 and "PARTIDO" not in h.upper():
+                    matches.append((h, a))
+                    if len(matches) == 21: break
+                    
         return matches[:21]
     except: return []
 
@@ -76,7 +85,7 @@ def get_upcoming_api_fixtures(days=14):
     headers = {"x-apisports-key": API_KEY}
     start = datetime.now().strftime("%Y-%m-%d")
     end = (datetime.now() + timedelta(days=days)).strftime("%Y-%m-%d")
-    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141]
+    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3]
     all_f = []
     for lid in leagues:
         for sn in [2025, 2026]:
@@ -97,16 +106,17 @@ def resolve_matches(scraped, api_data):
         query = f"{clean_name(h)} vs {clean_name(v)}"
         match, score = process.extractOne(query, api_keys, scorer=fuzz.token_sort_ratio)
         if score > 60:
-            resolved.append(api_map[match])
-            print(f"Game {i+1:2}: {h:15} vs {v:15} -> Resolved (ID: {api_map[match]})")
+            fid = api_map[match]
+            resolved.append(fid)
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> Resolved (ID: {fid})")
         else:
             print(f"Game {i+1:2}: {h:15} vs {v:15} -> ❌ FAILED (Score: {score})")
     return resolved
 
 if __name__ == "__main__":
     post_url = get_latest_progol_post_url()
-    slate = scrape_official_table(post_url)
-    if not slate: print("❌ Table not found."); exit(1)
+    slate = scrape_flexible_slate(post_url)
+    if not slate: print("❌ Slate not found."); exit(1)
     
     api_data = get_upcoming_api_fixtures()
     ids = resolve_matches(slate, api_data)
