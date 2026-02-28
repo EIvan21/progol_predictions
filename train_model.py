@@ -1,72 +1,70 @@
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from category_encoders import TargetEncoder
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.metrics import log_loss, accuracy_score
 import joblib
-import os
 import json
 import logging
+import os
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
 DATA_PATH = 'data/processed/final_train_data.csv'
-MODEL_A_PATH = 'models/binary_home_detector.pkl' # Brain 1: Home vs Not-Home
-MODEL_B_PATH = 'models/draw_away_separator.pkl' # Brain 2: Draw vs Away
-SCALER_PATH = 'models/scaler.pkl'
+PRIMARY_MODEL_PATH = 'models/calibrated_ensemble.pkl'
+UNDERDOG_MODEL_PATH = 'models/underdog_specialist.pkl'
+METRICS_PATH = 'models/metrics.json'
 
-def train_cascading_models():
-    logging.info("🔬 STARTING HIERARCHICAL (CASCADING) TRAINING")
+def train_heavy_model():
+    logging.info("🔬 STARTING MULTI-PERSPECTIVE TRAINING")
     df = pd.read_csv(DATA_PATH).sort_values('date')
     
-    exclude = ['fixture_id', 'date', 'target', 'venue', 'referee']
-    features = [c for c in df.columns if c not in exclude]
+    split_idx = int(len(df) * 0.85)
+    train_df, test_df = df.iloc[:split_idx], df.iloc[split_idx:]
     
-    # 1. Prepare Data
-    df = df.dropna(subset=['target'])
-    X = df[features].fillna(0)
-    y = df['target']
+    # 1. PREPARE ENCODER & SCALER
+    encoder = TargetEncoder(cols=['venue', 'referee'])
+    train_df_enc = encoder.fit_transform(train_df[['venue', 'referee']], train_df['target'])
     
+    def get_X_y(base_df, enc_df):
+        X = base_df.drop(columns=['fixture_id', 'date', 'target', 'venue', 'referee'])
+        X['venue_enc'] = enc_df['venue']
+        X['ref_enc'] = enc_df['referee']
+        return X, base_df['target']
+
+    X_train, y_train = get_X_y(train_df, train_df_enc)
     scaler = StandardScaler()
-    X_scaled = pd.DataFrame(scaler.fit_transform(X), columns=features)
+    X_train_s = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
     
-    # --- MODEL A: HOME vs NOT-HOME ---
-    logging.info("Training Model A (Home Win Detector)...")
-    y_binary = (y == 0).astype(int) # 1 if Home, 0 otherwise
-    X_train_a, X_test_a, y_train_a, y_test_a = train_test_split(X_scaled, y_binary, test_size=0.15, stratify=y_binary, random_state=42)
-    
-    model_a = xgb.XGBClassifier(n_estimators=500, max_depth=5, learning_rate=0.05)
-    model_a.fit(X_train_a, y_train_a)
-    acc_a = accuracy_score(y_test_a, model_a.predict(X_test_a))
-    logging.info(f"Model A Accuracy: {acc_a:.4f}")
+    # --- PERSPECTIVE 1: STANDARD ENSEMBLE ---
+    logging.info("Training Primary Ensemble (L/E/V)...")
+    base_models = [
+        ('xgb', CalibratedClassifierCV(xgb.XGBClassifier(n_estimators=300), method='isotonic')),
+        ('rf', CalibratedClassifierCV(RandomForestClassifier(n_estimators=300), method='isotonic'))
+    ]
+    primary_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
+    primary_stack.fit(X_train_s, y_train)
 
-    # --- MODEL B: DRAW vs AWAY ---
-    # We only train on rows where target was NOT Home (target != 0)
-    logging.info("Training Model B (Draw vs Away Specialist)...")
-    df_non_home = df[df['target'] != 0].copy()
-    X_nh = X_scaled.loc[df_non_home.index]
-    y_nh = df_non_home['target'] # Will be 1 (Draw) or 2 (Away)
+    # --- PERSPECTIVE 2: UNDERDOG SPECIALIST (E vs V) ---
+    logging.info("Training Underdog Specialist (E vs V)...")
+    nh_idx = y_train != 0
+    X_train_nh = X_train_s[nh_idx]
+    y_train_nh = y_train[nh_idx]
     
-    X_train_b, X_test_b, y_train_b, y_test_b = train_test_split(X_nh, y_nh, test_size=0.15, stratify=y_nh, random_state=42)
-    
-    model_b = RandomForestClassifier(n_estimators=500, max_depth=10, class_weight='balanced')
-    model_b.fit(X_train_b, y_train_b)
-    acc_b = accuracy_score(y_test_b, model_b.predict(X_test_b))
-    logging.info(f"Model B Accuracy: {acc_b:.4f}")
+    underdog_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
+    underdog_stack.fit(X_train_nh, y_train_nh)
 
-    # Save Everything
+    # 3. SAVE EVERYTHING
     os.makedirs('models', exist_ok=True)
-    joblib.dump(model_a, MODEL_A_PATH)
-    joblib.dump(model_b, MODEL_B_PATH)
-    joblib.dump(scaler, SCALER_PATH)
+    joblib.dump({'model': primary_stack, 'scaler': scaler, 'encoder': encoder, 'features': X_train.columns.tolist()}, PRIMARY_MODEL_PATH)
+    joblib.dump({'model': underdog_stack}, UNDERDOG_MODEL_PATH)
     
-    with open('models/metrics.json', 'w') as f:
-        json.dump({'model_a_acc': acc_a, 'model_b_acc': acc_b, 'features': features}, f)
-    
-    logging.info("✅ Cascading Brains Saved Successfully.")
+    logging.info("✅ Both Brains Saved Successfully.")
 
 if __name__ == "__main__":
-    train_cascading_models()
+    train_heavy_model()
