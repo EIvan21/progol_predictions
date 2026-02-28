@@ -19,7 +19,7 @@ LEAGUES = {
     "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
     "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263
 }
-SEASONS = [2019, 2020, 2021, 2022, 2023, 2024]
+SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 def fetch_alpha_details(fid):
     try:
@@ -61,7 +61,7 @@ def enrich_database_alpha(max_workers=10):
 if __name__ == "__main__":
     database.init_db()
     # RESTORED: Fixture Discovery Logic
-    logging.info("Step 1: Discovering Matches (2019-2024)...")
+    logging.info("Step 1: Discovering Matches (2019-2026)...")
     for name, lid in LEAGUES.items():
         for season in SEASONS:
             last_date = database.get_latest_match_date(lid, season)
