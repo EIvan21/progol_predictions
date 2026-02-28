@@ -7,36 +7,45 @@ def calculate_ticket_cost(doubles, triples):
 def get_entropy(probs):
     return -np.sum(probs * np.log2(probs + 1e-9))
 
-def optimize_progol_ticket(match_probs, budget=2000):
-    """Optimizes budget for any number of matches."""
+def get_custom_ticket_config(match_probs, num_doubles, num_triples):
+    """Generates a config based on exact counts requested by user."""
     match_stats = []
     for i, p in enumerate(match_probs):
-        entropy = get_entropy(p)
-        match_stats.append({
-            'id': i, 'probs': p, 'entropy': entropy
-        })
+        match_stats.append({'id': i, 'entropy': get_entropy(p)})
+    
+    df = pd.DataFrame(match_stats).sort_values('entropy', ascending=False)
+    sorted_indices = df.index.tolist()
+    
+    config = ['S'] * len(match_probs)
+    # Assign Triples to top most uncertain
+    for i in range(min(num_triples, len(sorted_indices))):
+        config[sorted_indices[i]] = 'T'
+    # Assign Doubles to next most uncertain
+    for i in range(num_triples, min(num_triples + num_doubles, len(sorted_indices))):
+        config[sorted_indices[i]] = 'D'
+        
+    return config, calculate_ticket_cost(num_doubles, num_triples)
+
+def optimize_progol_ticket(match_probs, budget=2000):
+    """Automatic greedy optimization based on budget."""
+    match_stats = []
+    for i, p in enumerate(match_probs):
+        match_stats.append({'id': i, 'entropy': get_entropy(p)})
     
     df = pd.DataFrame(match_stats).sort_values('entropy', ascending=False)
     
-    # Configuration search
     max_d, max_t = 0, 0
-    for t in range(10): # Allow more triples for larger slates
+    for t in range(10):
         for d in range(14): 
             cost = calculate_ticket_cost(d, t)
-            if cost <= budget:
-                if (d + t) <= len(match_probs):
-                    if cost > calculate_ticket_cost(max_d, max_t):
-                        max_d, max_t = d, t
+            if cost <= budget and (d + t) <= len(match_probs):
+                if cost > calculate_ticket_cost(max_d, max_t):
+                    max_d, max_t = d, t
 
-    # DYNAMIC CONFIG SIZE
     config = ['S'] * len(match_probs)
     sorted_indices = df.index.tolist()
-    
-    # Apply Triples and Doubles to most uncertain matches
-    for i in range(min(max_t, len(sorted_indices))):
-        config[sorted_indices[i]] = 'T'
-    for i in range(max_t, min(max_t + max_d, len(sorted_indices))):
-        config[sorted_indices[i]] = 'D'
+    for i in range(max_t): config[sorted_indices[i]] = 'T'
+    for i in range(max_t, max_t + max_d): config[sorted_indices[i]] = 'D'
         
     return config, calculate_ticket_cost(max_d, max_t), max_d, max_t
 

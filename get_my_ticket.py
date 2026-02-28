@@ -55,29 +55,39 @@ def generate_predictions(match_ids, p_model, u_model, scaler, encoder, features)
 
 def main():
     print("\n" + "="*50)
-    print("🏟️  PROGOL INSTANT TICKET OPTIMIZER  🏟️")
+    print("🏟️  PROGOL CUSTOM TICKET TOOL  🏟️")
     print("="*50)
     
     if not os.path.exists(PRIMARY_PATH):
         print("❌ Model missing."); return
 
-    try:
-        budget = float(input("\nEnter budget (MXN): "))
-    except:
-        budget = 1000.0
+    # Choice of input mode
+    print("Select Input Mode:")
+    print("  [1] Optimize by Total Budget (MXN)")
+    print("  [2] Fixed count of Doubles & Triples")
+    choice = input("Choice: ")
 
     p_pkg = joblib.load(PRIMARY_PATH); u_pkg = joblib.load(UNDERDOG_PATH)
     p_model, scaler, encoder, features = p_pkg['model'], p_pkg['scaler'], p_pkg['encoder'], p_pkg['features']
-    
     with open(IDS_FILE, 'r') as f: ids = json.load(f).get('match_ids', [])
 
-    print(f"\n🧠 Calculating 21 matches...")
+    print(f"\n🧠 Processing {len(ids)} matches...")
     probs, matches = generate_predictions(ids, p_model, u_pkg['model'], scaler, encoder, features)
     
-    config, cost, d, t = progol_optimizer.optimize_progol_ticket(probs, budget=budget)
-    
-    print("\n" + "*"*20 + " YOUR OPTIMIZED TICKET " + "*"*20)
-    print(f"Budget: ${budget} | Real Cost: ${cost} | Structure: {t}T, {d}D")
+    if choice == '1':
+        try: budget = float(input("Enter budget (MXN): "))
+        except: budget = 1000.0
+        config, cost, d, t = progol_optimizer.optimize_progol_ticket(probs, budget=budget)
+    else:
+        try:
+            t = int(input("How many TRIPLES? "))
+            d = int(input("How many DOUBLES? "))
+        except:
+            t, d = 0, 0
+        config, cost = progol_optimizer.get_custom_ticket_config(probs, d, t)
+
+    print("\n" + "*"*20 + " YOUR CUSTOM TICKET " + "*"*20)
+    print(f"Structure: {t} Triples, {d} Doubles | Final Cost: ${cost} MXN")
     progol_optimizer.print_final_ticket(matches, probs, config)
     print("\n✅ TICKET COMPLETE. GOOD LUCK!")
 
