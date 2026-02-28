@@ -7,7 +7,7 @@ from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 from category_encoders import TargetEncoder
 from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import log_loss, accuracy_score
+from sklearn.metrics import log_loss, accuracy_score, classification_report
 import joblib
 import json
 import logging
@@ -27,44 +27,66 @@ def train_heavy_model():
     split_idx = int(len(df) * 0.85)
     train_df, test_df = df.iloc[:split_idx], df.iloc[split_idx:]
     
-    # 1. PREPARE ENCODER & SCALER
+    # 1. ENCODE & SCALE
     encoder = TargetEncoder(cols=['venue', 'referee'])
     train_df_enc = encoder.fit_transform(train_df[['venue', 'referee']], train_df['target'])
+    test_df_enc = encoder.transform(test_df[['venue', 'referee']])
     
-    def get_X_y(base_df, enc_df):
+    def prepare_X(base_df, enc_df):
         X = base_df.drop(columns=['fixture_id', 'date', 'target', 'venue', 'referee'])
         X['venue_enc'] = enc_df['venue']
         X['ref_enc'] = enc_df['referee']
-        return X, base_df['target']
+        return X
 
-    X_train, y_train = get_X_y(train_df, train_df_enc)
+    X_train, y_train = prepare_X(train_df, train_df_enc), train_df['target']
+    X_test, y_test = prepare_X(test_df, test_df_enc), test_df['target']
+    
     scaler = StandardScaler()
     X_train_s = pd.DataFrame(scaler.fit_transform(X_train), columns=X_train.columns)
+    X_test_s = pd.DataFrame(scaler.transform(X_test), columns=X_train.columns)
     
-    # --- PERSPECTIVE 1: STANDARD ENSEMBLE ---
-    logging.info("Training Primary Ensemble (L/E/V)...")
+    # 2. MODELS
     base_models = [
-        ('xgb', CalibratedClassifierCV(xgb.XGBClassifier(n_estimators=300), method='isotonic')),
-        ('rf', CalibratedClassifierCV(RandomForestClassifier(n_estimators=300), method='isotonic'))
+        ('xgb', CalibratedClassifierCV(xgb.XGBClassifier(n_estimators=200), method='isotonic')),
+        ('rf', CalibratedClassifierCV(RandomForestClassifier(n_estimators=200), method='isotonic'))
     ]
-    primary_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
-    primary_stack.fit(X_train_s, y_train)
-
-    # --- PERSPECTIVE 2: UNDERDOG SPECIALIST (E vs V) ---
-    logging.info("Training Underdog Specialist (E vs V)...")
+    
+    # Primary
+    p_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
+    p_stack.fit(X_train_s, y_train)
+    
+    # Underdog (Non-Home)
     nh_idx = y_train != 0
-    X_train_nh = X_train_s[nh_idx]
-    y_train_nh = y_train[nh_idx]
-    
-    underdog_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
-    underdog_stack.fit(X_train_nh, y_train_nh)
+    u_stack = StackingClassifier(estimators=base_models, final_estimator=LogisticRegression(), cv=3, stack_method='predict_proba')
+    u_stack.fit(X_train_s[nh_idx], y_train[nh_idx])
 
-    # 3. SAVE EVERYTHING
-    os.makedirs('models', exist_ok=True)
-    joblib.dump({'model': primary_stack, 'scaler': scaler, 'encoder': encoder, 'features': X_train.columns.tolist()}, PRIMARY_MODEL_PATH)
-    joblib.dump({'model': underdog_stack}, UNDERDOG_MODEL_PATH)
+    # 3. METRICS GENERATION
+    y_pred = p_stack.predict(X_test_s)
+    acc = accuracy_score(y_test, y_pred)
+    report = classification_report(y_test, y_pred, output_dict=True)
     
-    logging.info("✅ Both Brains Saved Successfully.")
+    # Extract Feature Importance from a proxy XGBoost for the report
+    proxy = xgb.XGBClassifier(n_estimators=100).fit(X_train_s, y_train)
+    feat_imp = {f: float(i) for f, i in zip(X_train.columns, proxy.feature_importances_)}
+
+    metrics = {
+        "accuracy": acc,
+        "classification_report": report,
+        "feature_importance": feat_imp,
+        "features": X_train.columns.tolist()
+    }
+    
+    # 4. SAVE
+    os.makedirs('models', exist_ok=True)
+    with open(METRICS_PATH, 'w') as f: json.dump(metrics, f, indent=4)
+    joblib.dump({'model': p_stack, 'scaler': scaler, 'encoder': encoder, 'features': X_train.columns.tolist()}, PRIMARY_MODEL_PATH)
+    joblib.dump({'model': u_stack}, UNDERDOG_MODEL_PATH)
+    
+    print("\n" + "="*30)
+    print(f"TRAINING COMPLETE")
+    print(f"Accuracy: {acc:.4f}")
+    print(f"F1-Macro: {report['macro avg']['f1-score']:.4f}")
+    print("="*30 + "\n")
 
 if __name__ == "__main__":
     train_heavy_model()

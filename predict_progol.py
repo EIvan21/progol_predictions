@@ -33,70 +33,85 @@ def predict_progol(match_ids):
     if not os.path.exists(PRIMARY_PATH): return
     p_pkg = joblib.load(PRIMARY_PATH)
     u_pkg = joblib.load(UNDERDOG_PATH)
-    
     p_model, scaler, encoder, features = p_pkg['model'], p_pkg['scaler'], p_pkg['encoder'], p_pkg['features']
     u_model = u_pkg['model']
 
     headers = {"x-apisports-key": os.getenv('FOOTBALL_API_KEY')}
-    
     table_primary = []
-    table_underdog = []
-
-    print(f"\n🚀 GENERATING DUAL-PERSPECTIVE ANALYSIS...")
+    
+    print(f"\n🚀 ANALYZING PROGOL SLATE (14 MATCHES)...")
     
     for mid in match_ids:
         try:
             res = requests.get(f"https://v3.football.api-sports.io/fixtures?id={mid}", headers=headers).json()
             m = res['response'][0]
+            h_name, a_name = m['teams']['home']['name'], m['teams']['away']['name']
             h_id, a_id = m['teams']['home']['id'], m['teams']['away']['id']
+            
             h = get_db_team_stats(h_id)
             a = get_db_team_stats(a_id)
             
-            # Differential Data
-            data = {
-                'roll_gf_diff': h[0]-a[0], 'roll_ga_diff': h[1]-a[1], 'roll_sh_diff': h[2]-a[2],
-                'off_eff_diff': h[3]-a[3], 'league_id': m['league']['id']
-            }
-            
-            # Categories
+            data = {'roll_gf_diff': h[0]-a[0], 'roll_ga_diff': h[1]-a[1], 'roll_sh_diff': h[2]-a[2], 'off_eff_diff': h[3]-a[3], 'league_id': m['league']['id']}
             enc_vals = encoder.transform(pd.DataFrame([{'venue': m['fixture']['venue']['name'], 'referee': m['fixture']['referee']}]))
-            data['venue_enc'] = enc_vals['venue'].values[0]
-            data['ref_enc'] = enc_vals['referee'].values[0]
+            data['venue_enc'], data['ref_enc'] = enc_vals['venue'].values[0], enc_vals['referee'].values[0]
             
             X = pd.DataFrame([data])
             for col in features:
                 if col not in X.columns: X[col] = 0
             X_scaled = pd.DataFrame(scaler.transform(X[features]), columns=features)
             
-            # 1. PRIMARY PREDICTION (Home/Draw/Away)
-            p_probs = p_model.predict_proba(X_scaled)[0]
-            table_primary.append({'id': mid, 'h': p_probs[0], 'd': p_probs[1], 'a': p_probs[2]})
+            # Get Standard Probs
+            probs = p_model.predict_proba(X_scaled)[0]
+            # Get Underdog Filter (E vs V)
+            u_probs = u_model.predict_proba(X_scaled)[0]
             
-            # 2. UNDERDOG FILTER (If not Home, which is better?)
-            u_probs = u_model.predict_proba(X_scaled)[0] # Probs for 1 (Draw) and 2 (Away)
-            table_underdog.append({'id': mid, 'd_vs_a': 'Draw' if u_probs[0] > u_probs[1] else 'Away', 'd_score': u_probs[0], 'a_score': u_probs[1]})
-            
-            print(f"✅ Analyzed {mid}")
+            table_primary.append({
+                'id': mid, 'match': f"{h_name} vs {a_name}", 
+                'h': probs[0], 'd': probs[1], 'v': probs[2],
+                'u_d': u_probs[0], 'u_v': u_probs[1]
+            })
+            print(f"✅ Processed: {h_name} vs {a_name}")
         except: continue
 
-    # --- TABLE 1: SCIENTIFIC PROBABILITIES ---
-    print("\n" + "="*25 + " TABLE 1: SCIENTIFIC PROBABILITIES " + "="*25)
-    print(f"{'Match ID':<10} | {'Home (%)':<10} | {'Draw (%)':<10} | {'Away (%)':<10} | {'PRED'}")
-    print("-" * 65)
-    for r in table_primary:
-        p_idx = np.argmax([r['h'], r['d'], r['a']])
+    # --- FINAL REPORT OUTPUT ---
+    print("\n" + "="*40 + " SCIENTIFIC PROGOL REPORT " + "="*40)
+    print(f"{'GAME':<3} | {'MATCHUP':<35} | {'HOME %':<8} | {'DRAW %':<8} | {'AWAY %':<8} | {'PRED'}")
+    print("-" * 105)
+    
+    all_probs = []
+    for i, r in enumerate(table_primary):
+        p_idx = np.argmax([r['h'], r['d'], r['v']])
         label = {0:'L', 1:'E', 2:'V'}[p_idx]
-        print(f"{r['id']:<10} | {r['h']*100:8.2f}% | {r['d']*100:8.2f}% | {r['a']*100:8.2f}% |  {label}")
+        all_probs.append(np.array([r['h'], r['d'], r['v']]))
+        print(f"{i+1:<3} | {r['match']:<35} | {r['h']*100:6.1f}% | {r['d']*100:6.1f}% | {r['v']*100:6.1f}% |  {label}")
 
-    # --- TABLE 2: THE UNDERDOG FILTER (E vs V) ---
-    print("\n" + "="*25 + " TABLE 2: DRAW VS AWAY SPECIALIST " + "="*25)
-    print(f"{'Match ID':<10} | {'Draw Conf':<10} | {'Away Conf':<10} | {'STRONGEST UNDERDOG'}")
-    print("-" * 65)
-    for r in table_underdog:
-        print(f"{r['id']:<10} | {r['d_score']*100:8.2f}% | {r['a_score']*100:8.2f}% |  {r['d_vs_a']}")
+    # --- OPTIMIZED TICKET CONSTRUCTION ---
+    if len(all_probs) >= 11:
+        print("\n" + "="*35 + " SUGGESTED PROGOL TICKET " + "="*35)
+        # Pad if needed
+        while len(all_probs) < 14: all_probs.append(np.array([0.45, 0.25, 0.30]))
+        
+        # Optimize: Standard high-value play (3 Doubles, 2 Triples)
+        # Progol Mexico common combo: 2 Triples + 3 Doubles = $1,080 MXN
+        config, cost, d, t = progol_optimizer.optimize_progol_ticket(all_probs, budget=1200)
+        
+        print(f"Ticket Strategy: {t} Triples, {d} Doubles, {14-t-d} Singles")
+        print(f"Estimated Cost: ${cost} MXN")
+        print("-" * 95)
+        
+        for i, (p, c) in enumerate(zip(all_probs, config)):
+            label = {0:'L', 1:'E', 2:'V'}[np.argmax(p)]
+            if c == 'S': pick = label
+            elif c == 'D': 
+                top2 = np.argsort(p)[-2:]
+                pick = "/".join([{0:'L', 1:'E', 2:'V'}[x] for x in sorted(top2)])
+            else: pick = "L/E/V"
+            print(f"Game {i+1:2}: [{pick:^7}]  (Confidence: {np.max(p)*100:4.1f}%)")
+        print("=" * 95)
 
 if __name__ == "__main__":
-    if os.path.exists('current_progol_ids.json'):
-        with open('current_progol_ids.json', 'r') as f:
+    ids_file = 'current_progol_ids.json'
+    if os.path.exists(ids_file):
+        with open(ids_file, 'r') as f:
             ids = json.load(f).get('match_ids', [])
         predict_progol(ids)
