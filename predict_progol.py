@@ -122,21 +122,20 @@ def predict_progol(match_ids):
             inf_data['venue'] = m['fixture']['venue']['name'] or "Unknown"
             inf_data['referee'] = m['fixture']['referee'] or "Unknown"
 
-            # 1. Encode
-            cat_df = pd.DataFrame([inf_data])[['league_id', 'venue', 'referee']]
-            encoded_df = encoder.transform(cat_df)
+            # 1. Prepare Raw DataFrame with all needed columns
+            X_raw = pd.DataFrame([inf_data])
             
-            # 2. Build Final Feature Vector
-            X_dict = inf_data.copy()
-            X_dict.update(encoded_df.iloc[0].to_dict())
+            # 2. Encode Categorical Columns (venue, referee, league_id)
+            X_enc = encoder.transform(X_raw)
             
-            X = pd.DataFrame([X_dict])
+            # 3. Select features and Scale
+            # Ensure all training features exist in the inference vector
             for col in features:
-                if col not in X.columns: X[col] = 0
+                if col not in X_enc.columns: X_enc[col] = 0
             
-            X_final = pd.DataFrame(scaler.transform(X[features]), columns=features)
+            X_final = pd.DataFrame(scaler.transform(X_enc[features]), columns=features)
             
-            # 3. Predict
+            # 4. Predict
             probs = model.predict_proba(X_final)[0]
             
             results.append({
