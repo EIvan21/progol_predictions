@@ -91,6 +91,10 @@ def add_rolling_features(df, history_df=None):
     # We shift(1) because we want stats BEFORE the match starts
     ewma = grouped.apply(lambda x: x.shift().ewm(span=5, min_periods=3).mean())
     
+    # FIX: Drop the redundant 'team_id' level from MultiIndex added by .apply()
+    if isinstance(ewma.index, pd.MultiIndex):
+        ewma = ewma.reset_index(level=0, drop=True)
+        
     # Join back
     stats = stats.join(ewma, rsuffix='_ewma')
     
