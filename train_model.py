@@ -8,7 +8,7 @@ from sklearn.linear_model import LogisticRegression, RidgeClassifier
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.preprocessing import StandardScaler
 from category_encoders import TargetEncoder
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import TimeSeriesSplit, StratifiedKFold
 from sklearn.metrics import log_loss, accuracy_score, classification_report, brier_score_loss
 from sklearn.utils.class_weight import compute_sample_weight
 import joblib
@@ -101,7 +101,7 @@ def train_heavy_model():
     stacking_model = StackingClassifier(
         estimators=estimators,
         final_estimator=LogisticRegression(class_weight='balanced', max_iter=1000),
-        cv=TimeSeriesSplit(n_splits=5), # CRITICAL: Walk-Forward Validation in Stacking
+        cv=StratifiedKFold(n_splits=5, shuffle=False), # FIX: StratifiedKFold (No Shuffle) for Partitions
         stack_method='predict_proba',
         n_jobs=-1
     )
