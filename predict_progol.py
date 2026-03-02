@@ -145,7 +145,7 @@ def predict_progol(match_ids):
             })
             print(f"✅ Processed: {h_name} vs {a_name}")
         except Exception as e:
-            # print(f"⚠️ Skip {mid}: {e}")
+            print(f"⚠️ Skip {mid}: {e}")
             continue
 
     # --- REPORT ---
