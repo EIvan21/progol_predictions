@@ -23,6 +23,8 @@ def migrate():
         ('odds_movement', 'FLOAT'),
         ('home_xg', 'FLOAT'),
         ('away_xg', 'FLOAT'),
+        ('home_rank', 'INTEGER'),
+        ('away_rank', 'INTEGER'),
         ('home_form', 'TEXT'),
         ('away_form', 'TEXT'),
         ('venue_id', 'INTEGER'),
