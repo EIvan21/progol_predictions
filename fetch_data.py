@@ -152,4 +152,4 @@ if __name__ == "__main__":
             except: continue
 
     # Step 2: Turbo Alpha Enrichment
-    enrich_database_alpha()
+    enrich_database_alpha(max_workers=50)
