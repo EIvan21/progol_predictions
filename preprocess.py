@@ -26,6 +26,7 @@ def form_to_points(form_str):
 
 def calculate_alpha_features(df):
     logging.info("🚀 Applying Strategy 10: Strategic Context Engine...")
+    pd.set_option('future.no_silent_downcasting', True)
     df['date'] = pd.to_datetime(df['date'])
     df = df.sort_values('date')
     
