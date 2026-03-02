@@ -41,6 +41,17 @@ def init_db():
             -- Dimension 4: xG Engine
             home_xg FLOAT,
             away_xg FLOAT,
+
+            -- Dimension 5: Contextual & H2H (New)
+            home_rank INTEGER,
+            away_rank INTEGER,
+            home_form TEXT,
+            away_form TEXT,
+            venue_id INTEGER,
+            venue_surface TEXT,
+            h2h_home_wins INTEGER,
+            h2h_draws INTEGER,
+            h2h_away_wins INTEGER,
             
             UNIQUE(fixture_id)
         )
@@ -61,20 +72,28 @@ def save_matches_to_db(matches_list, season):
     return count
 
 def update_alpha_stats(fixture_id, data):
-    """Updates match with Odds and xG."""
+    """Updates match with Odds, xG, and Contextual (Rank, Form, Venue, H2H)."""
     conn = get_connection()
     conn.execute('''
         UPDATE matches SET 
         home_shots = ?, away_shots = ?, home_possession = ?, away_possession = ?, 
         home_corners = ?, away_corners = ?, 
         odds_home = ?, odds_draw = ?, odds_away = ?,
-        home_xg = ?, away_xg = ?
+        home_xg = ?, away_xg = ?,
+        home_rank = ?, away_rank = ?,
+        home_form = ?, away_form = ?,
+        venue_id = ?, venue_surface = ?,
+        h2h_home_wins = ?, h2h_draws = ?, h2h_away_wins = ?
         WHERE fixture_id = ?
     ''', (
         data.get('h_sh'), data.get('a_sh'), data.get('h_po'), data.get('a_po'),
         data.get('h_co'), data.get('a_co'),
         data.get('o_h'), data.get('o_d'), data.get('o_a'),
         data.get('h_xg'), data.get('a_xg'),
+        data.get('h_rank'), data.get('a_rank'),
+        data.get('h_form'), data.get('a_form'),
+        data.get('v_id'), data.get('v_surf'),
+        data.get('h2h_h'), data.get('h2h_d'), data.get('h2h_a'),
         fixture_id
     ))
     conn.commit(); conn.close()

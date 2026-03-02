@@ -21,8 +21,64 @@ LEAGUES = {
 }
 SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
+# GLOBAL CACHES
+standings_cache = {}
+venue_cache = {}
+
+def get_standings(league, season):
+    """Fetches and caches standings for a given league/season."""
+    key = f"{league}_{season}"
+    if key in standings_cache: return standings_cache[key]
+    
+    try:
+        res = requests.get(f"{BASE_URL}/standings?league={league}&season={season}", headers=headers).json().get('response', [])
+        if res:
+            table = {}
+            # Some leagues might have multiple groups (e.g. Apertura/Clausura), take the first one
+            for standing in res[0]['league']['standings'][0]:
+                table[standing['team']['id']] = {
+                    'rank': standing['rank'],
+                    'form': standing['form']
+                }
+            standings_cache[key] = table
+            return table
+    except: pass
+    return {}
+
+def get_h2h(tid1, tid2):
+    """Fetches head-to-head stats (wins, draws, losses)."""
+    try:
+        res = requests.get(f"{BASE_URL}/fixtures/headtohead?h2h={tid1}-{tid2}", headers=headers).json().get('response', [])
+        h, d, a = 0, 0, 0
+        for m in res[:10]: # Last 10 matches
+            if m['goals']['home'] > m['goals']['away']: h += 1
+            elif m['goals']['home'] == m['goals']['away']: d += 1
+            else: a += 1
+        return h, d, a
+    except: return 0, 0, 0
+
+def get_venue_surface(team_id):
+    """Fetches and caches venue surface (grass vs artificial)."""
+    if team_id in venue_cache: return venue_cache[team_id]
+    try:
+        res = requests.get(f"{BASE_URL}/teams?id={team_id}", headers=headers).json().get('response', [])
+        if res:
+            v_id = res[0]['venue']['id']
+            v_surf = res[0]['venue']['surface']
+            venue_cache[team_id] = (v_id, v_surf)
+            return (v_id, v_surf)
+    except: pass
+    return (0, "Unknown")
+
 def fetch_alpha_details(fid):
     try:
+        # 1. Get Match Teams & IDs first
+        conn = database.get_connection()
+        m_info = pd.read_sql_query(f"SELECT home_id, away_id, league_id, season FROM matches WHERE fixture_id = {fid}", conn).iloc[0]
+        conn.close()
+        h_id, a_id, lid, season = int(m_info['home_id']), int(m_info['away_id']), int(m_info['league_id']), int(m_info['season'])
+
+        # 2. Statistics & Odds
         s_res = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fid}", headers=headers).json().get('response', [])
         stats = {}
         if s_res:
@@ -39,6 +95,20 @@ def fetch_alpha_details(fid):
         if o_res and o_res[0].get('bookmakers'):
             bets = o_res[0]['bookmakers'][0]['bets'][0]['values']
             stats['o_h'], stats['o_d'], stats['o_a'] = float(bets[0]['odd']), float(bets[1]['odd']), float(bets[2]['odd'])
+
+        # 3. New Strategic Context (Rankings, Form, H2H, Venue)
+        std = get_standings(lid, season)
+        stats['h_rank'] = std.get(h_id, {}).get('rank', 10)
+        stats['a_rank'] = std.get(a_id, {}).get('rank', 10)
+        stats['h_form'] = std.get(h_id, {}).get('form', "DDDDD")
+        stats['a_form'] = std.get(a_id, {}).get('form', "DDDDD")
+        
+        v_id, v_surf = get_venue_surface(h_id)
+        stats['v_id'], stats['v_surf'] = v_id, v_surf
+        
+        h2h_h, h2h_d, h2h_a = get_h2h(h_id, a_id)
+        stats['h2h_h'], stats['h2h_d'], stats['h2h_a'] = h2h_h, h2h_d, h2h_a
+
         return fid, stats
     except: return fid, None
 
