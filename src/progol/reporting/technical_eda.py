@@ -53,13 +53,9 @@ def run_technical_eda():
     plt.savefig(f"{REPORT_DIR}distribution_boxplots.png")
     plt.close()
 
-    print(f"
-✅ AUDIT COMPLETE. Results saved in {REPORT_DIR}")
-    print(f"Top 3 High-Signal Features (MI):
-{mi_results.head(3)}")
-    print(f"
-Top 3 Potential Redundant Features (VIF > 5):
-{vif_data[vif_data['VIF'] > 5].head(3)}")
+    print(f"\nAUDIT COMPLETE. Results saved in {REPORT_DIR}")
+    print(f"Top 3 High-Signal Features (MI):\n{mi_results.head(3)}")
+    print(f"\nTop 3 Potential Redundant Features (VIF > 5):\n{vif_data[vif_data['VIF'] > 5].head(3)}")
 
 if __name__ == "__main__":
     if os.path.exists(DATA_PATH):

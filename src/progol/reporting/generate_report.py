@@ -1,7 +1,7 @@
 import json
 import os
 import datetime
-import config
+from src.progol import config
 from pylatex import Document, Section, Subsection, Table, Tabular, MultiColumn, Package
 from pylatex.utils import italic, bold, NoEscape
 

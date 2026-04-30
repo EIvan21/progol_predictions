@@ -1,18 +1,18 @@
 import os
-import requests
 import time
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-import database
+from src.progol import database
+from src.progol.utils.http import api_football_session
+from src.progol.utils.logging_setup import configure as configure_logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+configure_logging()
 load_dotenv()
-API_KEY = os.getenv('FOOTBALL_API_KEY')
+SESSION = api_football_session()
 BASE_URL = "https://v3.football.api-sports.io"
-headers = {"x-apisports-key": API_KEY}
 
 LEAGUES = {
     "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
@@ -31,7 +31,7 @@ def get_standings(league, season):
     if key in standings_cache: return standings_cache[key]
     
     try:
-        res = requests.get(f"{BASE_URL}/standings?league={league}&season={season}", headers=headers).json().get('response', [])
+        res = SESSION.get(f"{BASE_URL}/standings?league={league}&season={season}", timeout=30).json().get('response', [])
         if res:
             table = {}
             # Some leagues might have multiple groups (e.g. Apertura/Clausura), take the first one
@@ -48,7 +48,7 @@ def get_standings(league, season):
 def get_h2h(tid1, tid2):
     """Fetches head-to-head stats (wins, draws, losses)."""
     try:
-        res = requests.get(f"{BASE_URL}/fixtures/headtohead?h2h={tid1}-{tid2}", headers=headers).json().get('response', [])
+        res = SESSION.get(f"{BASE_URL}/fixtures/headtohead?h2h={tid1}-{tid2}", timeout=30).json().get('response', [])
         h, d, a = 0, 0, 0
         for m in res[:10]: # Last 10 matches
             if m['goals']['home'] > m['goals']['away']: h += 1
@@ -61,7 +61,7 @@ def get_venue_surface(team_id):
     """Fetches and caches venue surface (grass vs artificial)."""
     if team_id in venue_cache: return venue_cache[team_id]
     try:
-        res = requests.get(f"{BASE_URL}/teams?id={team_id}", headers=headers).json().get('response', [])
+        res = SESSION.get(f"{BASE_URL}/teams?id={team_id}", timeout=30).json().get('response', [])
         if res:
             v_id = res[0]['venue']['id']
             v_surf = res[0]['venue']['surface']
@@ -79,7 +79,7 @@ def fetch_alpha_details(fid):
         h_id, a_id, lid, season = int(m_info['home_id']), int(m_info['away_id']), int(m_info['league_id']), int(m_info['season'])
 
         # 2. Statistics & Odds
-        s_res = requests.get(f"{BASE_URL}/fixtures/statistics?fixture={fid}", headers=headers).json().get('response', [])
+        s_res = SESSION.get(f"{BASE_URL}/fixtures/statistics?fixture={fid}", timeout=30).json().get('response', [])
         stats = {}
         if s_res:
             for i, ts in enumerate(s_res):
@@ -91,7 +91,7 @@ def fetch_alpha_details(fid):
                 total_sh = int(s_map.get('Total Shots', 0) or 0)
                 stats[f'{p}_xg'] = (stats[f'{p}_sh'] * 0.3) + (total_sh * 0.1)
 
-        o_res = requests.get(f"{BASE_URL}/odds?fixture={fid}&bookmaker=8", headers=headers).json().get('response', [])
+        o_res = SESSION.get(f"{BASE_URL}/odds?fixture={fid}&bookmaker=8", timeout=30).json().get('response', [])
         if o_res and o_res[0].get('bookmakers'):
             bets = o_res[0]['bookmakers'][0]['bets'][0]['values']
             stats['o_h'], stats['o_d'], stats['o_a'] = float(bets[0]['odd']), float(bets[1]['odd']), float(bets[2]['odd'])
@@ -119,7 +119,7 @@ def enrich_database_alpha(max_workers=10):
         fixtures = pd.read_sql_query(query, conn)['fixture_id'].tolist()
         conn.close()
         if not fixtures: break
-        logging.info(f"⚡ Alpha Enrichment: {len(fixtures)} matches in batch...")
+        logging.info(f"alpha_enrichment_batch", extra={'size': len(fixtures)})
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_fid = {executor.submit(fetch_alpha_details, fid): fid for fid in fixtures}
             for future in as_completed(future_to_fid):
@@ -143,7 +143,7 @@ if __name__ == "__main__":
             
             logging.info(f"Fetching {name} {season} fixtures...")
             try:
-                res = requests.get(f"{BASE_URL}/fixtures", headers=headers, params=params).json()
+                res = SESSION.get(f"{BASE_URL}/fixtures", params=params, timeout=30).json()
                 matches = res.get('response', [])
                 if matches:
                     database.save_matches_to_db(matches, season)
