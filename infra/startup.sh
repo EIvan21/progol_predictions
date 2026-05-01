@@ -6,6 +6,7 @@ exec > /var/log/progol-startup.log 2>&1
 
 BUCKET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket)"
 REPO_URL="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/repo-url)"
+PROGOL_BUDGET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/progol-budget || echo "")"
 WORK_DIR="/opt/progol_predictions"
 
 apt-get update -y
@@ -33,6 +34,7 @@ gsutil -m rsync -r "gs://$BUCKET/models" models/ || echo "no models prefix in bu
 export USE_GCS=true
 export GCS_BUCKET="$BUCKET"
 export LOG_JSON=true
+[ -n "$PROGOL_BUDGET" ] && export PROGOL_BUDGET="$PROGOL_BUDGET"
 
 python -m src.progol.ingest.fetch_data
 python -m src.progol.modeling.preprocess
