@@ -73,18 +73,31 @@ def train_heavy_model():
     y_test = test_holdout['target']
 
     lgb_params = _load_best_lgb_params()
+    lgb_params.setdefault('class_weight', 'balanced')
     lgb_clf = lgb.LGBMClassifier(**lgb_params)
+
+    # XGBoost has no class_weight param for multiclass; sample_weight is the lever.
     xgb_clf = xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=6,
                                 random_state=42, eval_metric='mlogloss')
-    cat_clf = CatBoostClassifier(n_estimators=300, learning_rate=0.03, depth=6,
-                                 random_state=42, verbose=0, allow_writing_files=False)
-    rf_clf = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42)
 
+    # CatBoost: per-class weights derived from observed class frequencies.
+    class_freq = y_train.value_counts(normalize=True).sort_index()
+    cat_weights = (1.0 / class_freq).reindex([0, 1, 2]).fillna(1.0).tolist()
+    cat_clf = CatBoostClassifier(n_estimators=300, learning_rate=0.03, depth=6,
+                                 random_state=42, verbose=0, allow_writing_files=False,
+                                 class_weights=cat_weights)
+
+    rf_clf = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42,
+                                    class_weight='balanced')
+
+    # Sigmoid (Platt) calibration is more robust than isotonic on small/medium datasets:
+    # isotonic can collapse probabilities into near-identical buckets when there is little
+    # signal-to-noise, producing the "everything predicts the same class" failure mode.
     estimators = [
-        ('lgb', CalibratedClassifierCV(_build_base_pipeline(lgb_clf), method='isotonic', cv=3)),
-        ('xgb', CalibratedClassifierCV(_build_base_pipeline(xgb_clf), method='isotonic', cv=3)),
-        ('cat', CalibratedClassifierCV(_build_base_pipeline(cat_clf), method='isotonic', cv=3)),
-        ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='isotonic', cv=3)),
+        ('lgb', CalibratedClassifierCV(_build_base_pipeline(lgb_clf), method='sigmoid', cv=3)),
+        ('xgb', CalibratedClassifierCV(_build_base_pipeline(xgb_clf), method='sigmoid', cv=3)),
+        ('cat', CalibratedClassifierCV(_build_base_pipeline(cat_clf), method='sigmoid', cv=3)),
+        ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='sigmoid', cv=3)),
     ]
 
     sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)

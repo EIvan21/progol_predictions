@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from src.progol import config, database
 from src.progol.features.team_state import build_inference_row
+from src.progol.modeling import quiniela
 from src.progol.utils import drift
 from src.progol.utils.http import api_football_session
 from src.progol.utils.logging_setup import configure as configure_logging
@@ -152,6 +153,39 @@ def predict_progol(match_ids):
         d = "*" if r['drift'] else ""
         print(f"{i+1:<3} | {r['match']:<35} | {r['h']*100:5.1f}% | {r['d']*100:5.1f}% | {r['v']*100:5.1f}% |  {label}    |  {d}")
     print("=" * 105 + "\n")
+
+    if results:
+        probs_arr = np.array([[r['h'], r['d'], r['v']] for r in results])
+        top_n = quiniela.top_n_quinielas(probs_arr, n=10)
+        print("TOP-10 QUINIELAS MAS PROBABLES:")
+        print(quiniela.format_top_n(top_n))
+        print()
+
+        budget_env = os.getenv('PROGOL_BUDGET')
+        if budget_env:
+            try:
+                budget = float(budget_env)
+                plan = quiniela.optimize_budget(probs_arr, budget=budget)
+                print(f"\nOptimizando con presupuesto = ${budget:.2f} MXN (base ${quiniela.BASE_COST_MXN}):")
+                print(quiniela.format_plan(plan))
+            except Exception as exc:
+                logger.warning(f"budget_optimization_failed: {exc}")
+
+        # Persist for downstream consumers (Telegram bot, dashboards).
+        out = {
+            'predictions': [{'match': r['match'], 'L': r['h'], 'E': r['d'], 'V': r['v'],
+                             'drift': r['drift']} for r in results],
+            'top_quinielas': top_n,
+            'generated_at': datetime.now(timezone.utc).isoformat(),
+            'model_version': model_version,
+        }
+        out_path = config.PROJECT_ROOT / 'predictions' / f'slate_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(out, indent=2))
+        latest_path = config.PROJECT_ROOT / 'predictions' / 'latest.json'
+        latest_path.write_text(json.dumps(out, indent=2))
+        gcs.upload_file(out_path, f"predictions/{out_path.name}")
+        gcs.upload_file(latest_path, "predictions/latest.json")
 
     gcs.upload_file(config.PREDICTIONS_DB_PATH, "predictions/predictions.db")
 
