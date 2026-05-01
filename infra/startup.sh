@@ -5,6 +5,13 @@ set -euo pipefail
 exec > /var/log/progol-startup.log 2>&1
 
 BUCKET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket)"
+
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+upload_log() {
+  gsutil cp /var/log/progol-startup.log "gs://$BUCKET/logs/startup-$RUN_ID.log" || true
+}
+trap upload_log EXIT
+
 REPO_URL="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/repo-url)"
 PROGOL_BUDGET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/progol-budget || echo "")"
 WORK_DIR="/opt/progol_predictions"
@@ -51,7 +58,6 @@ python -m src.progol.modeling.predict || echo "prediction step failed"
 gsutil -m rsync -r data "gs://$BUCKET/db"
 gsutil -m rsync -r models "gs://$BUCKET/models"
 gsutil -m rsync -r reports "gs://$BUCKET/reports" || true
-gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$(date -u +%Y%m%dT%H%M%SZ).json" || true
-gsutil cp /var/log/progol-startup.log "gs://$BUCKET/logs/startup-$(date -u +%Y%m%dT%H%M%SZ).log" || true
+gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$RUN_ID.json" || true
 
 shutdown -h now
