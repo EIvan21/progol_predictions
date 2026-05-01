@@ -41,9 +41,15 @@ python -m src.progol.modeling.train
 python -m src.progol.modeling.walk_forward --folds 6 || true
 python -m src.progol.modeling.backtest --kelly 0.25 --min-edge 0.04 || true
 
+python -m src.progol.reporting.eda || echo "eda generation failed"
+python -m src.progol.reporting.generate_report || echo "training summary failed"
+python -m src.progol.ingest.get_progol_ids || echo "progol slate scrape failed"
+python -m src.progol.modeling.predict || echo "prediction step failed"
+
 gsutil -m rsync -r data "gs://$BUCKET/db"
 gsutil -m rsync -r models "gs://$BUCKET/models"
 gsutil -m rsync -r reports "gs://$BUCKET/reports" || true
+gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$(date -u +%Y%m%dT%H%M%SZ).json" || true
 gsutil cp /var/log/progol-startup.log "gs://$BUCKET/logs/startup-$(date -u +%Y%m%dT%H%M%SZ).log" || true
 
 shutdown -h now

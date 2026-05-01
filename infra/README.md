@@ -80,5 +80,9 @@ bash infra/teardown.sh --delete-bucket  # nukes everything
 5. `python -m src.progol.modeling.train`
 6. `python -m src.progol.modeling.walk_forward`
 7. `python -m src.progol.modeling.backtest`
-8. Sync `data/`, `models/`, `reports/`, `logs/` back to GCS
-9. `shutdown -h now`
+8. `python -m src.progol.reporting.eda` (full EDA PDF)
+9. `python -m src.progol.reporting.generate_report` (training summary PDF)
+10. `python -m src.progol.ingest.get_progol_ids` (scrape upcoming Progol slate)
+11. `python -m src.progol.modeling.predict` (predict the slate)
+12. Sync `data/`, `models/`, `reports/`, `predictions/`, `logs/` back to GCS
+13. `shutdown -h now`

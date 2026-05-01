@@ -67,7 +67,8 @@ def main():
     if flags['backtest']:
         steps.append(("src.progol.modeling.backtest", "Economic backtest", ["--kelly", "0.25", "--min-edge", "0.04"], False))
     steps += [
-        ("src.progol.reporting.generate_report", "Generating report", None, False),
+        ("src.progol.reporting.eda", "Generating EDA report", None, False),
+        ("src.progol.reporting.generate_report", "Generating training summary", None, False),
         ("src.progol.ingest.get_progol_ids", "Scraping Progol slate", None, True),
         ("src.progol.modeling.predict", "Final predictions", None, True),
     ]

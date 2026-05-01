@@ -4,7 +4,7 @@ import logging
 import pandas as pd
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from src.progol import database
+from src.progol import config, database
 from src.progol.utils.http import api_football_session
 from src.progol.utils.logging_setup import configure as configure_logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,12 +14,17 @@ load_dotenv()
 SESSION = api_football_session()
 BASE_URL = "https://v3.football.api-sports.io"
 
-LEAGUES = {
-    "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
-    "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
-    "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263
-}
-SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
+if config.IS_LOCAL_TEST:
+    LEAGUES = {"Liga MX": 262}
+    SEASONS = [2025]
+    logging.info("IS_LOCAL_TEST=True -> fetching only Liga MX 2025")
+else:
+    LEAGUES = {
+        "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
+        "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
+        "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263
+    }
+    SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
 # GLOBAL CACHES
 standings_cache = {}
@@ -95,6 +100,8 @@ def fetch_alpha_details(fid):
         if o_res and o_res[0].get('bookmakers'):
             bets = o_res[0]['bookmakers'][0]['bets'][0]['values']
             stats['o_h'], stats['o_d'], stats['o_a'] = float(bets[0]['odd']), float(bets[1]['odd']), float(bets[2]['odd'])
+        else:
+            stats['o_h'], stats['o_d'], stats['o_a'] = 0.0, 0.0, 0.0
 
         # 3. New Strategic Context (Rankings, Form, H2H, Venue)
         std = get_standings(lid, season)
