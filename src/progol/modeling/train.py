@@ -153,7 +153,13 @@ def train_heavy_model():
         'accuracy': acc, 'brier_score': brier, 'log_loss': loss,
     })
 
-    gcs.upload_dir(config.MODEL_DIR, gcs_prefix='models', include_suffixes=['.pkl', '.json'])
+    # Python's google-auth fails on GCE Metadata Server mTLS in this image.
+    # Local files are saved above; startup.sh's gsutil rsync (gcloud auth)
+    # uploads them. Don't let an upload error abort the rest of the pipeline.
+    try:
+        gcs.upload_dir(config.MODEL_DIR, gcs_prefix='models', include_suffixes=['.pkl', '.json'])
+    except Exception as e:
+        logger.warning("Python GCS upload skipped (%s); bash gsutil rsync will sync.", e)
 
     print("\n" + "=" * 40)
     print(f"Version:     {version_dir.name}")
