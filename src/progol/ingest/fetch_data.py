@@ -63,13 +63,15 @@ def get_h2h(tid1, tid2):
     except: return 0, 0, 0
 
 def get_venue_surface(team_id):
-    """Fetches and caches venue surface (grass vs artificial)."""
+    """Fetches venue surface AND persists team metadata. Cached per team_id."""
     if team_id in venue_cache: return venue_cache[team_id]
     try:
         res = SESSION.get(f"{BASE_URL}/teams?id={team_id}", timeout=30).json().get('response', [])
         if res:
-            v_id = res[0]['venue']['id']
-            v_surf = res[0]['venue']['surface']
+            payload = res[0]
+            database.upsert_team(team_id, payload)
+            v_id = payload['venue']['id']
+            v_surf = payload['venue']['surface']
             venue_cache[team_id] = (v_id, v_surf)
             return (v_id, v_surf)
     except: pass
@@ -119,6 +121,43 @@ def fetch_alpha_details(fid):
         return fid, stats
     except: return fid, None
 
+def backfill_teams(max_workers=10):
+    """One-time fetch of team metadata for any team_id seen in matches but
+    not yet present in the teams table. Idempotent — safe to call every run."""
+    conn = database.get_connection()
+    rows = conn.execute('''
+        SELECT DISTINCT team_id FROM (
+            SELECT home_id AS team_id FROM matches
+            UNION SELECT away_id AS team_id FROM matches
+        )
+        WHERE team_id IS NOT NULL
+          AND team_id NOT IN (SELECT team_id FROM teams)
+    ''').fetchall()
+    conn.close()
+    team_ids = [r[0] for r in rows]
+    if not team_ids:
+        return
+    logging.info(f"backfill_teams: {len(team_ids)} teams to fetch")
+
+    def fetch_one(tid):
+        try:
+            res = SESSION.get(f"{BASE_URL}/teams?id={tid}", timeout=30).json().get('response', [])
+            if res:
+                database.upsert_team(tid, res[0])
+                return tid, True
+        except Exception:
+            pass
+        return tid, False
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        for fut in as_completed({ex.submit(fetch_one, tid): tid for tid in team_ids}):
+            _, ok = fut.result()
+            done += 1
+            if done % 100 == 0:
+                logging.info(f"backfill_teams: {done}/{len(team_ids)}")
+
+
 def enrich_database_alpha(max_workers=10):
     while True:
         conn = database.get_connection()
@@ -160,3 +199,7 @@ if __name__ == "__main__":
 
     # Step 2: Turbo Alpha Enrichment
     enrich_database_alpha(max_workers=50)
+
+    # Step 3: Backfill team metadata (names, country, venue) for any team_id
+    # not yet in the teams table. Cheap when up-to-date.
+    backfill_teams(max_workers=10)

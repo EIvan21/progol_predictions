@@ -53,9 +53,56 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_home ON matches(home_id, date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_away ON matches(away_id, date)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS teams (
+            team_id INTEGER PRIMARY KEY,
+            name TEXT,
+            country TEXT,
+            code TEXT,
+            founded INTEGER,
+            venue_id INTEGER,
+            venue_name TEXT,
+            venue_surface TEXT,
+            logo TEXT,
+            updated_at TEXT
+        )
+    ''')
     conn.commit()
     conn.close()
     logging.info("Database initialized with Alpha Signal schema.")
+
+
+def upsert_team(team_id, payload):
+    """Insert or update a team row. payload is the API-Football /teams item."""
+    if not payload:
+        return
+    team = payload.get('team', {}) or {}
+    venue = payload.get('venue', {}) or {}
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO teams (team_id, name, country, code, founded, venue_id,
+                           venue_name, venue_surface, logo, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(team_id) DO UPDATE SET
+            name=excluded.name, country=excluded.country, code=excluded.code,
+            founded=excluded.founded, venue_id=excluded.venue_id,
+            venue_name=excluded.venue_name, venue_surface=excluded.venue_surface,
+            logo=excluded.logo, updated_at=excluded.updated_at
+    ''', (
+        team_id, team.get('name'), team.get('country'), team.get('code'),
+        team.get('founded'), venue.get('id'), venue.get('name'),
+        venue.get('surface'), team.get('logo'),
+    ))
+    conn.commit()
+    conn.close()
+
+
+def get_team_name(team_id):
+    conn = get_connection()
+    cur = conn.execute("SELECT name FROM teams WHERE team_id = ?", (team_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None
 
 
 def save_matches_to_db(matches_list, season):
