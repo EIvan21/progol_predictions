@@ -100,7 +100,9 @@ def train_heavy_model():
         ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='sigmoid', cv=3)),
     ]
 
-    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
+    # sklearn 1.5.x sigmoid calibration uses the float32 CyHalfBinomialLoss kernel;
+    # sample_weight must be float32 or it raises "Buffer dtype mismatch".
+    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train).astype(np.float32)
     stacking_model = StackingClassifier(
         estimators=estimators,
         final_estimator=LogisticRegression(class_weight='balanced', max_iter=1000),
