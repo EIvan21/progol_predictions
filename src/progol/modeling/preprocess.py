@@ -49,9 +49,16 @@ def calculate_alpha_features(df):
 
     for col in ['odds_home', 'odds_draw', 'odds_away']:
         df[col] = df[col].replace(0, np.nan)
-    df['prob_market_h'] = (1 / df['odds_home']).fillna(0.45)
-    df['prob_market_d'] = (1 / df['odds_draw']).fillna(0.25)
-    df['prob_market_a'] = (1 / df['odds_away']).fillna(0.30)
+    # Devigging: raw 1/odds sums to ~1.05-1.10 (bookmaker overround). Divide
+    # each by the overround so the three implied probs sum to 1.0 — that's
+    # the bookmaker's actual prior, free of margin distortion.
+    raw_h = 1 / df['odds_home']
+    raw_d = 1 / df['odds_draw']
+    raw_a = 1 / df['odds_away']
+    overround = raw_h + raw_d + raw_a
+    df['prob_market_h'] = (raw_h / overround).fillna(0.45)
+    df['prob_market_d'] = (raw_d / overround).fillna(0.25)
+    df['prob_market_a'] = (raw_a / overround).fillna(0.30)
 
     df['xg_diff'] = df['roll_xg_h'] - df['roll_xg_a']
     df['elo_diff'] = df['elo_home'] - df['elo_away']

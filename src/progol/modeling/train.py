@@ -16,8 +16,6 @@ from sklearn.metrics import (accuracy_score, brier_score_loss,
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
-from sklearn.utils.class_weight import compute_sample_weight
-
 from src.progol import config
 from src.progol.utils import drift
 from src.progol.utils.logging_setup import configure as configure_logging
@@ -102,16 +100,24 @@ def train_heavy_model():
         ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='isotonic', cv=3)),
     ]
 
-    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
+    # Class balance is already handled at the base-estimator level
+    # (class_weight='balanced' on lgb/cat/rf, class_weights= on cat). Adding
+    # sample_weight at stacking level + class_weight on the meta-LR triple-
+    # weights the minority class, which produced a strong over-prediction
+    # of draws (14X/7V/0L on a 21-match slate vs ~9/6/6 historical baseline).
+    # Pipeline-wrapping additionally drops sample_weight before it reaches
+    # the inner clf step (sklearn issue #21134), so the only places sw was
+    # actually landing were the isotonic calibrator and the meta-LR — both
+    # of which were biasing toward the central class. Drop both.
     stacking_model = StackingClassifier(
         estimators=estimators,
-        final_estimator=LogisticRegression(class_weight='balanced', max_iter=1000),
+        final_estimator=LogisticRegression(max_iter=1000),
         cv=StratifiedKFold(n_splits=5, shuffle=False),
         stack_method='predict_proba', n_jobs=-1,
     )
 
     logger.info("Training stacking ensemble...")
-    stacking_model.fit(X_train, y_train, sample_weight=sample_weights)
+    stacking_model.fit(X_train, y_train)
 
     y_pred = stacking_model.predict(X_test)
     y_prob = stacking_model.predict_proba(X_test)
