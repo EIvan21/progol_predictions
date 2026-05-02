@@ -24,14 +24,20 @@ API_BASE = "https://v3.football.api-sports.io"
 
 
 def _market_probs_from_api(fixture_id: int, session) -> tuple:
+    """Returns devigged implied probabilities (sum to 1.0). Training features
+    are devigged in preprocess.py, so inference must match — raw 1/odds sums
+    to ~1.05-1.10 due to bookmaker overround and would induce a distribution
+    shift that drift detection flags on every fixture."""
     try:
         res = session.get(f"{API_BASE}/odds?fixture={fixture_id}&bookmaker=8",
                           timeout=20).json().get('response', [])
         if res and res[0].get('bookmakers'):
             bets = res[0]['bookmakers'][0]['bets'][0]['values']
-            return (1 / float(bets[0]['odd']),
-                    1 / float(bets[1]['odd']),
-                    1 / float(bets[2]['odd']))
+            raw_h = 1 / float(bets[0]['odd'])
+            raw_d = 1 / float(bets[1]['odd'])
+            raw_a = 1 / float(bets[2]['odd'])
+            overround = raw_h + raw_d + raw_a
+            return (raw_h / overround, raw_d / overround, raw_a / overround)
     except Exception as e:
         logger.warning("odds_fetch_failed", extra={'fixture_id': fixture_id, 'err': str(e)})
     return (0.45, 0.25, 0.30)

@@ -32,8 +32,11 @@ def calculate_alpha_features(df):
     h_xg = df[['fixture_id', 'date', 'home_id', 'home_xg']].rename(columns={'home_id': 'team_id', 'home_xg': 'xg'})
     a_xg = df[['fixture_id', 'date', 'away_id', 'away_xg']].rename(columns={'away_id': 'team_id', 'away_xg': 'xg'})
     xg_stats = pd.concat([h_xg, a_xg]).sort_values(['team_id', 'date'])
+    # EWMA span=5 matches team_state._team_xg_ewma used at inference time.
+    # Previously used .rolling(5).mean() which gave inference vs training
+    # drift on the xg_diff feature (drift detector flagged every fixture).
     xg_stats['roll_xg'] = xg_stats.groupby('team_id')['xg'].transform(
-        lambda x: x.shift().rolling(5, min_periods=1).mean()
+        lambda x: x.shift().ewm(span=5, min_periods=3).mean()
     ).fillna(0)
 
     df = df.merge(
