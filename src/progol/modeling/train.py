@@ -90,19 +90,19 @@ def train_heavy_model():
     rf_clf = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42,
                                     class_weight='balanced')
 
-    # Sigmoid (Platt) calibration is more robust than isotonic on small/medium datasets:
-    # isotonic can collapse probabilities into near-identical buckets when there is little
-    # signal-to-noise, producing the "everything predicts the same class" failure mode.
+    # Calibration: isotonic. Sigmoid (Platt) was preferred for robustness on
+    # small/medium data, but sklearn 1.5.x routes sigmoid through the Cython
+    # CyHalfBinomialLoss whose dtype dispatch breaks across mixed-dtype proba
+    # outputs (xgb→float32, lgb/cat/rf→float64). Isotonic (PAVA) is
+    # dtype-agnostic. Watch for probability collapse on tail classes.
     estimators = [
-        ('lgb', CalibratedClassifierCV(_build_base_pipeline(lgb_clf), method='sigmoid', cv=3)),
-        ('xgb', CalibratedClassifierCV(_build_base_pipeline(xgb_clf), method='sigmoid', cv=3)),
-        ('cat', CalibratedClassifierCV(_build_base_pipeline(cat_clf), method='sigmoid', cv=3)),
-        ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='sigmoid', cv=3)),
+        ('lgb', CalibratedClassifierCV(_build_base_pipeline(lgb_clf), method='isotonic', cv=3)),
+        ('xgb', CalibratedClassifierCV(_build_base_pipeline(xgb_clf), method='isotonic', cv=3)),
+        ('cat', CalibratedClassifierCV(_build_base_pipeline(cat_clf), method='isotonic', cv=3)),
+        ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='isotonic', cv=3)),
     ]
 
-    # sklearn 1.5.x sigmoid calibration uses the float32 CyHalfBinomialLoss kernel;
-    # sample_weight must be float32 or it raises "Buffer dtype mismatch".
-    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train).astype(np.float32)
+    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
     stacking_model = StackingClassifier(
         estimators=estimators,
         final_estimator=LogisticRegression(class_weight='balanced', max_iter=1000),
