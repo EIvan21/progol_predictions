@@ -7,14 +7,29 @@ exec > /var/log/progol-startup.log 2>&1
 BUCKET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/gcs-bucket)"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-upload_log() {
+WORK_DIR="/opt/progol_predictions"
+finalize() {
+  # Run on every script exit (success, set -e abort, signal). Sync any
+  # produced artifacts to GCS, upload the log, then halt. Any individual
+  # failure here must not block subsequent uploads — disable -e and guard
+  # each call. Halt only after all uploads complete to avoid the kernel
+  # racing the network teardown.
+  set +e
+  cd "$WORK_DIR" 2>/dev/null
+  gsutil -m rsync -r data "gs://$BUCKET/db"          || true
+  gsutil -m rsync -r models "gs://$BUCKET/models"    || true
+  gsutil -m rsync -r reports "gs://$BUCKET/reports"  || true
+  if [ -f current_progol_ids.json ]; then
+    gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$RUN_ID.json" || true
+  fi
   gsutil cp /var/log/progol-startup.log "gs://$BUCKET/logs/startup-$RUN_ID.log" || true
+  sync
+  shutdown -h now
 }
-trap upload_log EXIT
+trap finalize EXIT
 
 REPO_URL="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/repo-url)"
 PROGOL_BUDGET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.internal/computeMetadata/v1/instance/attributes/progol-budget || echo "")"
-WORK_DIR="/opt/progol_predictions"
 
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip git curl
@@ -61,9 +76,4 @@ python -m src.progol.reporting.generate_report || echo "training summary failed"
 python -m src.progol.ingest.get_progol_ids || echo "progol slate scrape failed"
 python -m src.progol.modeling.predict || echo "prediction step failed"
 
-gsutil -m rsync -r data "gs://$BUCKET/db"
-gsutil -m rsync -r models "gs://$BUCKET/models"
-gsutil -m rsync -r reports "gs://$BUCKET/reports" || true
-gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$RUN_ID.json" || true
-
-shutdown -h now
+# Uploads + shutdown happen in the EXIT trap (finalize) defined above.
