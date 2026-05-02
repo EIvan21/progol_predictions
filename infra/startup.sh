@@ -43,6 +43,12 @@ export GCS_BUCKET="$BUCKET"
 export LOG_JSON=true
 [ -n "$PROGOL_BUDGET" ] && export PROGOL_BUDGET="$PROGOL_BUDGET"
 
+# GCE Metadata Server now uses mTLS on HTTPS:443. The system CA bundle has
+# the freshly-bootstrapped MDS root cert, but Python's requests/certifi does
+# not. Point Python at the system bundle so google-auth can talk to MDS.
+export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
+
 python -m src.progol.ingest.fetch_data
 python -m src.progol.modeling.preprocess
 python -m src.progol.modeling.tune --trials 30 --timeout 1200 || echo "tune skipped"
