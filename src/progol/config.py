@@ -25,12 +25,15 @@ LATEST_POINTER_PATH = MODEL_DIR / "latest.json"
 PROGOL_IDS_PATH = DATA_DIR / "current_progol_ids.json"
 
 CAT_COLS = ['venue', 'referee', 'league_id']
+# Market probs are NOT trained as features: only ~22 of 33k historical rows have
+# odds, so they'd be effectively constant. They're applied as an inference-time
+# blend instead — see predict.py + MODEL_MARKET_BLEND.
 FEATURE_COLS = [
     'xg_diff', 'elo_diff', 'rank_gap', 'momentum_diff', 'h2h_diff', 'is_artificial',
     'gf_ewma_diff', 'ga_ewma_diff', 'sf_ewma_diff', 'sos_gf_diff',
     'rest_diff',
-    'prob_market_h', 'prob_market_d', 'prob_market_a',
 ]
+MODEL_MARKET_BLEND_DEFAULT = 0.6
 
 
 def get_data_limit(total_count):

@@ -23,11 +23,10 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://v3.football.api-sports.io"
 
 
-def _market_probs_from_api(fixture_id: int, session) -> tuple:
-    """Returns devigged implied probabilities (sum to 1.0). Training features
-    are devigged in preprocess.py, so inference must match — raw 1/odds sums
-    to ~1.05-1.10 due to bookmaker overround and would induce a distribution
-    shift that drift detection flags on every fixture."""
+def _market_probs_from_api(fixture_id: int, session):
+    """Returns (probs, has_market). probs sums to 1.0 — devigged from bookmaker
+    overround. has_market=False means the API returned nothing and probs is the
+    generic 1X2 prior; callers should NOT blend that into the model output."""
     try:
         res = session.get(f"{API_BASE}/odds?fixture={fixture_id}&bookmaker=8",
                           timeout=20).json().get('response', [])
@@ -37,10 +36,10 @@ def _market_probs_from_api(fixture_id: int, session) -> tuple:
             raw_d = 1 / float(bets[1]['odd'])
             raw_a = 1 / float(bets[2]['odd'])
             overround = raw_h + raw_d + raw_a
-            return (raw_h / overround, raw_d / overround, raw_a / overround)
+            return (raw_h / overround, raw_d / overround, raw_a / overround), True
     except Exception as e:
         logger.warning("odds_fetch_failed", extra={'fixture_id': fixture_id, 'err': str(e)})
-    return (0.45, 0.25, 0.30)
+    return (0.45, 0.25, 0.30), False
 
 
 def _init_predictions_db():
@@ -98,7 +97,10 @@ def predict_progol(match_ids):
     conn = database.get_connection()
     results = []
 
-    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version}")
+    blend_w = float(os.getenv('MODEL_MARKET_BLEND', config.MODEL_MARKET_BLEND_DEFAULT))
+    blend_w = min(max(blend_w, 0.0), 1.0)
+
+    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (blend={blend_w:.2f})")
 
     for mid in match_ids:
         try:
@@ -115,7 +117,7 @@ def predict_progol(match_ids):
             venue = (m['fixture']['venue'] or {}).get('name') or "Unknown"
             referee = m['fixture'].get('referee') or "Unknown"
 
-            market_probs = _market_probs_from_api(mid, session)
+            market_probs, has_market = _market_probs_from_api(mid, session)
 
             row = build_inference_row(
                 conn, home_id=h_id, away_id=a_id,
@@ -128,7 +130,13 @@ def predict_progol(match_ids):
                 logger.warning("feature_drift_detected", extra={'fixture_id': mid, 'flags': drift_flags})
 
             X = pd.DataFrame([row])[feature_cols]
-            probs = model.predict_proba(X)[0]
+            model_probs = model.predict_proba(X)[0]
+
+            if has_market:
+                blended = blend_w * model_probs + (1.0 - blend_w) * np.array(market_probs)
+                probs = blended / blended.sum()
+            else:
+                probs = model_probs
             label = int(np.argmax(probs))
 
             _log_prediction({
