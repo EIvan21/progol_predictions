@@ -73,7 +73,8 @@ python -m src.progol.modeling.backtest --kelly 0.25 --min-edge 0.04 || true
 
 python -m src.progol.reporting.eda || echo "eda generation failed"
 python -m src.progol.reporting.generate_report || echo "training summary failed"
-python -m src.progol.ingest.get_progol_ids || echo "progol slate scrape failed"
+# Slate scrape MUST succeed to predict the right matches. Don't mask failure.
+python -m src.progol.ingest.get_progol_ids
 python -m src.progol.modeling.predict || echo "prediction step failed"
 
 # Uploads + shutdown happen in the EXIT trap (finalize) defined above.

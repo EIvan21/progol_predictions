@@ -2,11 +2,14 @@ import requests
 import re
 import json
 import os
+import sys
 import logging
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
 from thefuzz import process, fuzz
 from dotenv import load_dotenv
+
+from src.progol import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 load_dotenv()
@@ -14,7 +17,8 @@ load_dotenv()
 API_KEY = os.getenv('FOOTBALL_API_KEY')
 BASE_URL = "https://v3.football.api-sports.io"
 PROGOL_CAT_URL = "https://quinielaposible.com/category/progol/"
-CACHE_FILE = 'current_progol_ids.json'
+CACHE_FILE = config.PROGOL_IDS_PATH
+EXPECTED_SLATE_SIZE = 21
 
 NICKNAME_MAP = {
     "ÁGUILAS": "AMÉRICA", "AGUILAS": "AMERICA", "C. AZUL": "CRUZ AZUL",
@@ -82,9 +86,14 @@ def scrape_flexible_slate(url):
         return []
 
 
-def get_upcoming_api_fixtures(days=10):
+def get_upcoming_api_fixtures(days_back=2, days_forward=5):
+    """Fetch fixtures in a date window (played + unplayed). The previous version
+    used `next=50` which silently dropped fixtures that had already kicked off,
+    leaving the slate resolver with <21 matches by Saturday afternoon."""
     headers = {"x-apisports-key": API_KEY}
-    horizon = datetime.now() + timedelta(days=days)
+    today = datetime.now().date()
+    date_from = (today - timedelta(days=days_back)).isoformat()
+    date_to = (today + timedelta(days=days_forward)).isoformat()
     # Liga MX, Premier, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Brasil, Argentina,
     # Portugal, Eredivisie, Belgium, Championship, La Liga 2, Libertadores, UCL, UEL,
     # Greek Super League, Bundesliga 2, Liga MX Expansion
@@ -93,12 +102,13 @@ def get_upcoming_api_fixtures(days=10):
     for lid in leagues:
         for sn in [2025, 2026]:
             try:
-                res = requests.get(f"{BASE_URL}/fixtures?league={lid}&season={sn}&next=50", headers=headers).json()
-                for f in res.get('response', []):
-                    fdate = datetime.fromisoformat(f['fixture']['date'].replace('Z', '+00:00')).replace(tzinfo=None)
-                    if fdate <= horizon:
-                        all_f.append(f)
-            except: continue
+                url = f"{BASE_URL}/fixtures?league={lid}&season={sn}&from={date_from}&to={date_to}"
+                res = requests.get(url, headers=headers, timeout=20).json()
+                all_f.extend(res.get('response', []))
+            except Exception as exc:
+                logging.warning(f"fixture_fetch_failed league={lid} season={sn}: {exc}")
+                continue
+    logging.info(f"Fetched {len(all_f)} candidate fixtures in window {date_from} -> {date_to}")
     return all_f
 
 def resolve_matches(scraped, api_data, threshold=75):
@@ -136,9 +146,28 @@ def resolve_matches(scraped, api_data, threshold=75):
 if __name__ == "__main__":
     post_url = get_latest_progol_post_url()
     slate = scrape_flexible_slate(post_url)
-    if not slate: print("❌ Slate not found."); exit(1)
-    
+    if not slate:
+        logging.error("Slate not found.")
+        sys.exit(1)
+
     api_data = get_upcoming_api_fixtures()
     ids = resolve_matches(slate, api_data)
-    with open(CACHE_FILE, 'w') as f: json.dump({"last_updated": datetime.now().strftime("%Y-%m-%d"), "match_ids": ids}, f)
-    print(f"\n🚀 Successfully resolved {len(ids)} matches.")
+
+    CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "last_updated": datetime.now().strftime("%Y-%m-%d"),
+        "source_url": post_url,
+        "expected": EXPECTED_SLATE_SIZE,
+        "resolved": len(ids),
+        "match_ids": ids,
+    }
+    with open(CACHE_FILE, 'w') as f:
+        json.dump(payload, f, indent=2)
+
+    logging.info(f"Resolved {len(ids)}/{EXPECTED_SLATE_SIZE} matches -> {CACHE_FILE}")
+    if len(ids) != EXPECTED_SLATE_SIZE:
+        logging.error(
+            f"Slate incomplete: {len(ids)}/{EXPECTED_SLATE_SIZE} resolved. "
+            f"Check NICKNAME_MAP and the date window in get_upcoming_api_fixtures."
+        )
+        sys.exit(2)
