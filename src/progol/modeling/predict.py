@@ -76,7 +76,7 @@ def _log_prediction(row: dict):
     conn.close()
 
 
-def predict_progol(match_ids):
+def predict_progol(match_ids, slate_meta=None):
     configure_logging()
     _init_predictions_db()
 
@@ -100,9 +100,15 @@ def predict_progol(match_ids):
     blend_w = float(os.getenv('MODEL_MARKET_BLEND', config.MODEL_MARKET_BLEND_DEFAULT))
     blend_w = min(max(blend_w, 0.0), 1.0)
 
-    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (blend={blend_w:.2f})")
+    # The slate file's concurso_number lets us link each prediction back to the
+    # progol_concurso_games row; game_number is the 1-indexed position in match_ids.
+    concurso_number = slate_meta.get('concurso_number') if slate_meta else None
 
-    for mid in match_ids:
+    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (blend={blend_w:.2f})")
+    if concurso_number:
+        print(f"Concurso: {concurso_number}")
+
+    for game_idx, mid in enumerate(match_ids, start=1):
         try:
             res = session.get(f"{API_BASE}/fixtures?id={mid}", timeout=20).json()
             if not res.get('response'):
@@ -148,6 +154,12 @@ def predict_progol(match_ids):
                 'predicted_label': label, 'drift_flags': drift_flags,
             })
 
+            if concurso_number:
+                database.update_concurso_prediction(
+                    concurso_number, game_idx, label,
+                    json.dumps({'L': float(probs[0]), 'E': float(probs[1]), 'V': float(probs[2])}),
+                )
+
             results.append({'match': f"{h_name} vs {a_name}",
                             'h': probs[0], 'd': probs[1], 'v': probs[2],
                             'drift': bool(drift_flags)})
@@ -157,6 +169,14 @@ def predict_progol(match_ids):
             continue
 
     conn.close()
+
+    # Backfill actual_label for any concurso games whose fixtures have settled.
+    try:
+        n = database.settle_concurso_actuals()
+        if n:
+            logger.info("concurso_actuals_backfilled", extra={'rows': n})
+    except Exception as exc:
+        logger.warning(f"settle_concurso_actuals failed: {exc}")
 
     print("\n" + "=" * 40 + " PROGOL REPORT " + "=" * 40)
     print(f"{'GAME':<3} | {'MATCHUP':<35} | {'L %':<6} | {'E %':<6} | {'V %':<6} | PRED | DRIFT")
@@ -187,6 +207,7 @@ def predict_progol(match_ids):
 
         # Persist for downstream consumers (Telegram bot, dashboards).
         out = {
+            'concurso_number': concurso_number,
             'predictions': [{'match': r['match'], 'L': r['h'], 'E': r['d'], 'V': r['v'],
                              'drift': r['drift']} for r in results],
             'top_quinielas': top_n,
@@ -205,13 +226,12 @@ def predict_progol(match_ids):
 
 
 if __name__ == "__main__":
-    if config.PROGOL_IDS_PATH.exists():
-        with open(config.PROGOL_IDS_PATH, 'r') as f:
-            ids = json.load(f).get('match_ids', [])
-        predict_progol(ids)
-    elif os.path.exists('current_progol_ids.json'):
-        with open('current_progol_ids.json', 'r') as f:
-            ids = json.load(f).get('match_ids', [])
-        predict_progol(ids)
-    else:
+    slate_path = config.PROGOL_IDS_PATH if config.PROGOL_IDS_PATH.exists() else None
+    if slate_path is None and os.path.exists('current_progol_ids.json'):
+        slate_path = 'current_progol_ids.json'
+    if slate_path is None:
         logger.error(f"{config.PROGOL_IDS_PATH} not found.")
+    else:
+        with open(slate_path, 'r') as f:
+            slate_meta = json.load(f)
+        predict_progol(slate_meta.get('match_ids', []), slate_meta=slate_meta)

@@ -67,6 +67,30 @@ def init_db():
             updated_at TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS progol_concursos (
+            concurso_number INTEGER PRIMARY KEY,
+            week_start TEXT,
+            source_url TEXT,
+            scraped_at TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS progol_concurso_games (
+            concurso_number INTEGER,
+            game_number INTEGER,
+            home_name TEXT,
+            away_name TEXT,
+            fixture_id INTEGER,
+            predicted_label INTEGER,
+            predicted_probs TEXT,
+            actual_label INTEGER,
+            settled_at TEXT,
+            PRIMARY KEY (concurso_number, game_number),
+            FOREIGN KEY (concurso_number) REFERENCES progol_concursos(concurso_number)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_concurso_games_fixture ON progol_concurso_games(fixture_id)")
     conn.commit()
     conn.close()
     logging.info("Database initialized with Alpha Signal schema.")
@@ -173,3 +197,91 @@ def get_all_matches_df():
     df = pd.read_sql_query("SELECT * FROM matches WHERE status = 'FT'", conn)
     conn.close()
     return df
+
+
+def upsert_concurso(concurso_number, week_start, source_url, games):
+    """Persist a Progol concurso (header + games). `games` is a list of dicts:
+    {game_number, home_name, away_name, fixture_id (or None)}."""
+    if not concurso_number or not games:
+        return
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO progol_concursos (concurso_number, week_start, source_url, scraped_at)
+        VALUES (?, ?, ?, datetime('now'))
+        ON CONFLICT(concurso_number) DO UPDATE SET
+            week_start=excluded.week_start, source_url=excluded.source_url,
+            scraped_at=excluded.scraped_at
+    ''', (concurso_number, week_start, source_url))
+    for g in games:
+        # ON CONFLICT preserves predicted_label/actual_label so a re-scrape
+        # before predict.py runs doesn't wipe yesterday's labels.
+        conn.execute('''
+            INSERT INTO progol_concurso_games
+                (concurso_number, game_number, home_name, away_name, fixture_id)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(concurso_number, game_number) DO UPDATE SET
+                home_name=excluded.home_name, away_name=excluded.away_name,
+                fixture_id=excluded.fixture_id
+        ''', (concurso_number, g['game_number'], g['home_name'], g['away_name'], g.get('fixture_id')))
+    conn.commit()
+    conn.close()
+
+
+def update_concurso_prediction(concurso_number, game_number, predicted_label, predicted_probs):
+    """Called from predict.py once the model has scored a fixture."""
+    conn = get_connection()
+    conn.execute('''
+        UPDATE progol_concurso_games
+        SET predicted_label = ?, predicted_probs = ?
+        WHERE concurso_number = ? AND game_number = ?
+    ''', (predicted_label, predicted_probs, concurso_number, game_number))
+    conn.commit()
+    conn.close()
+
+
+def settle_concurso_actuals():
+    """Backfill actual_label from finished matches. Idempotent."""
+    conn = get_connection()
+    conn.execute('''
+        UPDATE progol_concurso_games
+        SET actual_label = (
+            SELECT CASE
+                WHEN m.goals_home > m.goals_away THEN 0
+                WHEN m.goals_home = m.goals_away THEN 1
+                ELSE 2
+            END
+            FROM matches m
+            WHERE m.fixture_id = progol_concurso_games.fixture_id
+              AND m.status = 'FT'
+        ),
+        settled_at = datetime('now')
+        WHERE actual_label IS NULL
+          AND fixture_id IN (SELECT fixture_id FROM matches WHERE status = 'FT')
+    ''')
+    n = conn.total_changes
+    conn.commit()
+    conn.close()
+    return n
+
+
+def get_concurso_with_games(concurso_number):
+    """Returns (header_dict, games_list) for the bot/dashboard."""
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    header = conn.execute(
+        "SELECT * FROM progol_concursos WHERE concurso_number = ?", (concurso_number,)
+    ).fetchone()
+    games = conn.execute(
+        "SELECT * FROM progol_concurso_games WHERE concurso_number = ? ORDER BY game_number",
+        (concurso_number,),
+    ).fetchall()
+    conn.close()
+    return (dict(header) if header else None, [dict(g) for g in games])
+
+
+def get_latest_concurso_number():
+    conn = get_connection()
+    cur = conn.execute("SELECT MAX(concurso_number) FROM progol_concursos")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else None

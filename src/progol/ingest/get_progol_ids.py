@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from thefuzz import process, fuzz
 from dotenv import load_dotenv
 
-from src.progol import config
+from src.progol import config, database
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 load_dotenv()
@@ -114,34 +114,50 @@ def get_upcoming_api_fixtures(days_back=2, days_forward=5):
 def resolve_matches(scraped, api_data, threshold=75):
     """Resolve scraped (home, away) pairs to API fixture IDs.
 
-    Prefers matches that preserve home/away orientation. Returns flat list of fixture IDs
-    (one per resolved match). Inverted matches are flagged in stdout so the user can
-    sanity-check before predict runs.
+    Returns a list of dicts: {game_number, home_name, away_name, fixture_id, inverted}.
+    home_name/away_name are the ORIGINAL scraped names (preserves Progol ordering)
+    so the L/E/V labels stay consistent when we persist to progol_concurso_games.
     """
     fwd_map = {f"{clean_name(f['teams']['home']['name'])} vs {clean_name(f['teams']['away']['name'])}": f['fixture']['id'] for f in api_data}
     rev_map = {f"{clean_name(f['teams']['away']['name'])} vs {clean_name(f['teams']['home']['name'])}": f['fixture']['id'] for f in api_data}
 
     fwd_keys = list(fwd_map.keys())
     rev_keys = list(rev_map.keys())
-    resolved = []
+    games = []
     print(f"\nRESOLVING 21-MATCH SLATE (threshold={threshold})...")
     for i, (h, v) in enumerate(scraped):
         query = f"{clean_name(h)} vs {clean_name(v)}"
         fwd_match, fwd_score = process.extractOne(query, fwd_keys, scorer=fuzz.token_sort_ratio) if fwd_keys else (None, 0)
         rev_match, rev_score = process.extractOne(query, rev_keys, scorer=fuzz.token_sort_ratio) if rev_keys else (None, 0)
 
+        fid = None
+        inverted = False
         if fwd_score >= threshold and fwd_score >= rev_score:
             fid, inverted, score = fwd_map[fwd_match], False, fwd_score
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score})")
         elif rev_score >= threshold:
             fid, inverted, score = rev_map[rev_match], True, rev_score
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score})  [INVERTED - L/V swapped]")
         else:
             print(f"Game {i+1:2}: {h:15} vs {v:15} -> FAILED (best score: {max(fwd_score, rev_score)})")
-            continue
 
-        flag = "  [INVERTED - L/V swapped]" if inverted else ""
-        print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score}){flag}")
-        resolved.append(fid)
-    return resolved
+        games.append({
+            'game_number': i + 1,
+            'home_name': h,
+            'away_name': v,
+            'fixture_id': fid,
+            'inverted': inverted,
+        })
+    return games
+
+
+def parse_concurso_number(url):
+    """Extract Progol concurso number from a quinielaposible.com URL like
+    https://quinielaposible.com/progol-2331-..."""
+    if not url:
+        return None
+    m = re.search(r'/progol-(\d+)', url)
+    return int(m.group(1)) if m else None
 
 if __name__ == "__main__":
     post_url = get_latest_progol_post_url()
@@ -151,23 +167,39 @@ if __name__ == "__main__":
         sys.exit(1)
 
     api_data = get_upcoming_api_fixtures()
-    ids = resolve_matches(slate, api_data)
+    games = resolve_matches(slate, api_data)
+    resolved_ids = [g['fixture_id'] for g in games if g['fixture_id'] is not None]
+    concurso_number = parse_concurso_number(post_url)
 
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "last_updated": datetime.now().strftime("%Y-%m-%d"),
         "source_url": post_url,
+        "concurso_number": concurso_number,
         "expected": EXPECTED_SLATE_SIZE,
-        "resolved": len(ids),
-        "match_ids": ids,
+        "resolved": len(resolved_ids),
+        "match_ids": resolved_ids,
     }
     with open(CACHE_FILE, 'w') as f:
         json.dump(payload, f, indent=2)
 
-    logging.info(f"Resolved {len(ids)}/{EXPECTED_SLATE_SIZE} matches -> {CACHE_FILE}")
-    if len(ids) != EXPECTED_SLATE_SIZE:
+    if concurso_number:
+        try:
+            database.init_db()
+            database.upsert_concurso(
+                concurso_number=concurso_number,
+                week_start=datetime.now().strftime("%Y-%m-%d"),
+                source_url=post_url,
+                games=games,
+            )
+            logging.info(f"Persisted concurso {concurso_number} ({len(games)} games) to DB")
+        except Exception as exc:
+            logging.warning(f"upsert_concurso failed: {exc}")
+
+    logging.info(f"Resolved {len(resolved_ids)}/{EXPECTED_SLATE_SIZE} matches -> {CACHE_FILE}")
+    if len(resolved_ids) != EXPECTED_SLATE_SIZE:
         logging.error(
-            f"Slate incomplete: {len(ids)}/{EXPECTED_SLATE_SIZE} resolved. "
+            f"Slate incomplete: {len(resolved_ids)}/{EXPECTED_SLATE_SIZE} resolved. "
             f"Check NICKNAME_MAP and the date window in get_upcoming_api_fixtures."
         )
         sys.exit(2)
