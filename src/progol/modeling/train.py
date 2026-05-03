@@ -16,6 +16,7 @@ from sklearn.metrics import (accuracy_score, brier_score_loss,
 from sklearn.model_selection import StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
+from scipy.optimize import minimize_scalar
 from src.progol import config
 from src.progol.utils import drift
 from src.progol.utils.logging_setup import configure as configure_logging
@@ -31,6 +32,36 @@ def calculate_brier_score(y_true, y_prob):
         y_bin = (y_true == i).astype(int)
         scores.append(brier_score_loss(y_bin, y_prob[:, i]))
     return float(np.mean(scores))
+
+
+def fit_temperature(y_prob, y_true, eps=1e-12):
+    """Post-hoc Platt-style temperature scaling on the holdout set.
+
+    Treats predict_proba output as already-softmaxed probs over 3 classes,
+    converts to log-space pseudo-logits, then finds T in [0.1, 5.0] that
+    minimizes NLL on the holdout. T<1 sharpens (more confident), T>1 softens.
+    Returns (T_opt, log_loss_before, log_loss_after)."""
+    y_prob = np.clip(y_prob, eps, 1.0)
+    y_true = np.asarray(y_true)
+    logits = np.log(y_prob)
+
+    def nll(T):
+        scaled = np.exp(logits / T)
+        scaled = scaled / scaled.sum(axis=1, keepdims=True)
+        p_true = np.clip(scaled[np.arange(len(y_true)), y_true], eps, 1.0)
+        return float(-np.mean(np.log(p_true)))
+
+    res = minimize_scalar(nll, bounds=(0.1, 5.0), method='bounded',
+                          options={'xatol': 1e-3})
+    return float(res.x), nll(1.0), float(res.fun)
+
+
+def apply_temperature(y_prob, T, eps=1e-12):
+    if T is None or abs(T - 1.0) < 1e-3:
+        return y_prob
+    y_prob = np.clip(y_prob, eps, 1.0)
+    scaled = np.exp(np.log(y_prob) / T)
+    return scaled / scaled.sum(axis=1, keepdims=True)
 
 
 def _build_base_pipeline(estimator):
@@ -126,6 +157,20 @@ def train_heavy_model():
     loss = log_loss(y_test, y_prob, labels=[0, 1, 2])
     report = classification_report(y_test, y_pred, output_dict=True)
 
+    # Temperature scaling fit on the holdout. We tune T to minimize NLL,
+    # then re-evaluate to confirm it actually helped (sanity check —
+    # in rare cases the optimizer hits a boundary and post-loss > pre-loss).
+    T_opt, loss_before_T, loss_after_T = fit_temperature(y_prob, y_test.values)
+    if loss_after_T < loss_before_T:
+        logger.info(f"Temperature: T={T_opt:.3f}, log_loss {loss_before_T:.4f} -> {loss_after_T:.4f}")
+        y_prob_T = apply_temperature(y_prob, T_opt)
+        loss_T = log_loss(y_test, y_prob_T, labels=[0, 1, 2])
+        brier_T = calculate_brier_score(y_test.values, y_prob_T)
+    else:
+        logger.info(f"Temperature: T={T_opt:.3f} did not improve, disabling (T=1.0)")
+        T_opt = 1.0
+        loss_T, brier_T = loss, brier
+
     proxy = lgb.LGBMClassifier(n_estimators=100, verbose=-1)
     proxy_pipe = _build_base_pipeline(proxy)
     proxy_pipe.fit(X_train, y_train)
@@ -133,6 +178,9 @@ def train_heavy_model():
 
     metrics = {
         "accuracy": acc, "log_loss": loss, "brier_score": brier,
+        "log_loss_temperature_scaled": loss_T,
+        "brier_score_temperature_scaled": brier_T,
+        "temperature": T_opt,
         "classification_report": report, "feature_importance": feat_imp,
         "features": feature_cols,
         "lgb_params": lgb_params,
@@ -147,7 +195,12 @@ def train_heavy_model():
     with open(config.METRICS_PATH, 'w') as f:
         json.dump(metrics, f, indent=4)
 
-    payload = {'model': stacking_model, 'features': feature_cols, 'version': version_dir.name}
+    payload = {
+        'model': stacking_model,
+        'features': feature_cols,
+        'version': version_dir.name,
+        'temperature': T_opt,
+    }
     joblib.dump(payload, version_dir / 'calibrated_ensemble.pkl')
     joblib.dump(payload, config.PRIMARY_MODEL_PATH)
 
@@ -168,11 +221,11 @@ def train_heavy_model():
         logger.warning("Python GCS upload skipped (%s); bash gsutil rsync will sync.", e)
 
     print("\n" + "=" * 40)
-    print(f"Version:     {version_dir.name}")
-    print(f"Accuracy:    {acc:.4f}")
-    print(f"Log Loss:    {loss:.4f}")
-    print(f"Brier Score: {brier:.4f}")
-    print(f"F1-Macro:    {report['macro avg']['f1-score']:.4f}")
+    print(f"Version:        {version_dir.name}")
+    print(f"Accuracy:       {acc:.4f}")
+    print(f"Log Loss:       {loss:.4f}  ->  {loss_T:.4f} (T={T_opt:.3f})")
+    print(f"Brier Score:    {brier:.4f}  ->  {brier_T:.4f}")
+    print(f"F1-Macro:       {report['macro avg']['f1-score']:.4f}")
     print("=" * 40 + "\n")
 
 

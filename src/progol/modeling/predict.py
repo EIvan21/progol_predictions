@@ -91,6 +91,7 @@ def predict_progol(match_ids, slate_meta=None):
     model = pkg['model']
     feature_cols = pkg['features']
     model_version = pkg.get('version', 'unversioned')
+    temperature = float(pkg.get('temperature', 1.0))
     feature_stats = drift.load_stats(config.FEATURE_STATS_PATH) or {}
 
     session = api_football_session()
@@ -104,7 +105,7 @@ def predict_progol(match_ids, slate_meta=None):
     # progol_concurso_games row; game_number is the 1-indexed position in match_ids.
     concurso_number = slate_meta.get('concurso_number') if slate_meta else None
 
-    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (blend={blend_w:.2f})")
+    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (T={temperature:.3f}, blend={blend_w:.2f})")
     if concurso_number:
         print(f"Concurso: {concurso_number}")
 
@@ -137,6 +138,14 @@ def predict_progol(match_ids, slate_meta=None):
 
             X = pd.DataFrame([row])[feature_cols]
             model_probs = model.predict_proba(X)[0]
+
+            # Temperature scaling: applied before the market blend so the
+            # blend weight operates on properly-calibrated model output.
+            if abs(temperature - 1.0) > 1e-3:
+                eps = 1e-12
+                clipped = np.clip(model_probs, eps, 1.0)
+                scaled = np.exp(np.log(clipped) / temperature)
+                model_probs = scaled / scaled.sum()
 
             if has_market:
                 blended = blend_w * model_probs + (1.0 - blend_w) * np.array(market_probs)
