@@ -209,19 +209,21 @@ def upsert_concurso(concurso_number, week_start, source_url, games):
         INSERT INTO progol_concursos (concurso_number, week_start, source_url, scraped_at)
         VALUES (?, ?, ?, datetime('now'))
         ON CONFLICT(concurso_number) DO UPDATE SET
-            week_start=excluded.week_start, source_url=excluded.source_url,
+            week_start=COALESCE(excluded.week_start, week_start),
+            source_url=excluded.source_url,
             scraped_at=excluded.scraped_at
     ''', (concurso_number, week_start, source_url))
     for g in games:
-        # ON CONFLICT preserves predicted_label/actual_label so a re-scrape
-        # before predict.py runs doesn't wipe yesterday's labels.
+        # ON CONFLICT: preserve predicted_label/actual_label across re-scrapes.
+        # COALESCE on fixture_id so the historical backfill (which passes None)
+        # doesn't null a fixture_id resolved earlier by the live scraper.
         conn.execute('''
             INSERT INTO progol_concurso_games
                 (concurso_number, game_number, home_name, away_name, fixture_id)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(concurso_number, game_number) DO UPDATE SET
                 home_name=excluded.home_name, away_name=excluded.away_name,
-                fixture_id=excluded.fixture_id
+                fixture_id=COALESCE(excluded.fixture_id, fixture_id)
         ''', (concurso_number, g['game_number'], g['home_name'], g['away_name'], g.get('fixture_id')))
     conn.commit()
     conn.close()
