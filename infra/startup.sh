@@ -16,9 +16,15 @@ finalize() {
   # racing the network teardown.
   set +e
   cd "$WORK_DIR" 2>/dev/null
-  gsutil -m rsync -r data "gs://$BUCKET/db"          || true
-  gsutil -m rsync -r models "gs://$BUCKET/models"    || true
-  gsutil -m rsync -r reports "gs://$BUCKET/reports"  || true
+  gsutil -m rsync -r data "gs://$BUCKET/db"                     || true
+  gsutil -m rsync -r models "gs://$BUCKET/models"                || true
+  gsutil -m rsync -r reports "gs://$BUCKET/reports"              || true
+  # Python's gcs.upload_file fails on GCE Metadata Server mTLS in this image
+  # (see train.py / predict.py warnings), so latest.json + slate_*.json don't
+  # land via that path. Sync the whole predictions/ dir via gcloud auth.
+  if [ -d predictions ]; then
+    gsutil -m rsync -r predictions "gs://$BUCKET/predictions"   || true
+  fi
   if [ -f current_progol_ids.json ]; then
     gsutil cp current_progol_ids.json "gs://$BUCKET/predictions/slate-$RUN_ID.json" || true
   fi
