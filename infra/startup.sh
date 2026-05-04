@@ -83,4 +83,12 @@ python -m src.progol.reporting.generate_report || echo "training summary failed"
 python -m src.progol.ingest.get_progol_ids
 python -m src.progol.modeling.predict || echo "prediction step failed"
 
+# Notify via Telegram. Non-fatal: a Telegram outage shouldn't fail the run
+# or block the GCS uploads in the EXIT trap.
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+  python -m src.progol.bot.send_predictions || echo "telegram notify failed"
+else
+  echo "telegram skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set"
+fi
+
 # Uploads + shutdown happen in the EXIT trap (finalize) defined above.
