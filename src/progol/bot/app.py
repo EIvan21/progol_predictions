@@ -32,7 +32,11 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from thefuzz import fuzz
 
 from src.progol import config, database
-from src.progol.bot.send_predictions import _format_message
+from src.progol.bot.formatting import (
+    format_concurso_message,
+    format_users_list,
+    format_match_prediction,
+)
 from src.progol.ingest.get_progol_ids import clean_name
 
 load_dotenv()
@@ -78,15 +82,23 @@ def _gcs_sync():
 
 
 def _load_latest():
+    """Returns (concurso_number, header, games, latest_meta).
+    latest_meta is the predictions/latest.json dict if present (gives us
+    top_quinielas + model metadata) or {} if missing. Falls back to the
+    DB's max(concurso_number) so the bot keeps working when latest.json
+    hasn't been pushed to GCS yet."""
     latest_path = config.PROJECT_ROOT / 'predictions' / 'latest.json'
-    if not latest_path.exists():
-        return None, None, []
-    latest = json.loads(latest_path.read_text())
-    concurso = latest.get('concurso_number')
-    header, games = (None, [])
-    if concurso:
-        header, games = database.get_concurso_with_games(concurso)
-    return latest, header, games
+    latest = {}
+    if latest_path.exists():
+        try:
+            latest = json.loads(latest_path.read_text())
+        except Exception:
+            latest = {}
+    concurso = latest.get('concurso_number') or database.get_latest_concurso_number()
+    if not concurso:
+        return None, None, [], latest
+    header, games = database.get_concurso_with_games(concurso)
+    return concurso, header, games, latest
 
 
 async def _record_inbound(update: Update):
@@ -199,24 +211,26 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_ultima(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    latest, header, games = _load_latest()
-    if not latest:
+    concurso, _header, games, latest = _load_latest()
+    if not concurso or not games:
         await update.message.reply_text("No hay predicciones guardadas aún.")
         return
     await update.message.reply_text(
-        _format_message(latest, header, games), parse_mode='Markdown'
+        format_concurso_message(concurso, games, latest=latest),
+        parse_mode='Markdown',
     )
 
 
 async def cmd_predecir_progol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Sincronizando con GCS...")
     _gcs_sync()
-    latest, header, games = _load_latest()
-    if not latest:
+    concurso, _header, games, latest = _load_latest()
+    if not concurso or not games:
         await update.message.reply_text("No hay predicciones disponibles tras sync.")
         return
     await update.message.reply_text(
-        _format_message(latest, header, games), parse_mode='Markdown'
+        format_concurso_message(concurso, games, latest=latest),
+        parse_mode='Markdown',
     )
 
 
@@ -237,8 +251,8 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    latest, _, games = _load_latest()
-    if not games:
+    concurso, _header, games, latest = _load_latest()
+    if not concurso or not games:
         await update.message.reply_text("No hay un concurso activo en la base.")
         return
 
@@ -256,7 +270,7 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     if not best_game or best_score < 70:
         await update.message.reply_text(
-            f"No encontré ese partido en el concurso {latest.get('concurso_number')} "
+            f"No encontré ese partido en el concurso {concurso} "
             f"(mejor coincidencia: {best_score:.0f})."
         )
         return
@@ -282,13 +296,8 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    label_idx = max(range(3), key=lambda k: probs[k])
-    pred = ['L', 'E', 'V'][label_idx]
     await update.message.reply_text(
-        f"*Concurso {latest.get('concurso_number')} — Juego {best_game['game_number']}*\n"
-        f"*{best_game['home_name']}* vs *{best_game['away_name']}*\n"
-        f"L: {probs[0]*100:.0f}% — E: {probs[1]*100:.0f}% — V: {probs[2]*100:.0f}%\n"
-        f"Predicción: *{pred}*",
+        format_match_prediction(concurso, best_game, probs),
         parse_mode='Markdown',
     )
 
@@ -297,22 +306,9 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_usuarios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     users = database.bot_list_users()
-    if not users:
-        await update.message.reply_text("Sin usuarios registrados.")
-        return
-    lines = ["```",
-             f"{'chat_id':>12} {'user_id':>12} {'role':<7} {'status':<8} name"]
-    for u in users:
-        name = (u.get('first_name') or '')
-        if u.get('username'):
-            name += f" @{u['username']}"
-        uid = u.get('user_id') if u.get('user_id') is not None else '-'
-        lines.append(
-            f"{u['chat_id']:>12} {str(uid):>12} {u['role']:<7} {u['status']:<8} {name[:24]}"
-        )
-    lines.append("```")
-    await update.message.reply_text("*Usuarios*\n" + "\n".join(lines),
-                                    parse_mode='Markdown')
+    await update.message.reply_text(
+        format_users_list(users), parse_mode='Markdown'
+    )
 
 
 async def cmd_aprobar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):

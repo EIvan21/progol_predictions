@@ -13,66 +13,17 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
 
 from src.progol import config, database
+from src.progol.bot.formatting import format_concurso_message
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
-
-
-def _format_message(latest, header, games):
-    """Build the Markdown message body. Telegram cap is 4096 chars; 21 games
-    + header fits comfortably under 2k."""
-    concurso = latest.get('concurso_number') or (header['concurso_number'] if header else '?')
-    generated_at = latest.get('generated_at', '')
-    model_v = latest.get('model_version', '?')
-    preds = latest.get('predictions', [])
-
-    by_idx = {g['game_number']: g for g in games}
-
-    lines = [f"*Progol {concurso}* — model `{model_v}`"]
-    if generated_at:
-        try:
-            ts = datetime.fromisoformat(generated_at.replace('Z', '+00:00'))
-            lines.append(f"_Generated {ts.strftime('%Y-%m-%d %H:%M UTC')}_")
-        except ValueError:
-            pass
-    lines.append("")
-    lines.append("```")
-    lines.append(f"{'#':>2}  {'MATCH':<32} {'L':>5} {'E':>5} {'V':>5}  PRED")
-    for i, p in enumerate(preds, start=1):
-        match = p['match'][:32]
-        pl = p['L'] * 100
-        pe = p['E'] * 100
-        pv = p['V'] * 100
-        idx = max(range(3), key=lambda k: [p['L'], p['E'], p['V']][k])
-        pred = ['L', 'E', 'V'][idx]
-        actual = by_idx.get(i, {}).get('actual_label')
-        if actual is not None:
-            actual_letter = ['L', 'E', 'V'][actual]
-            mark = '+' if actual == idx else 'x'
-            pred = f"{pred} ({actual_letter}{mark})"
-        lines.append(f"{i:>2}  {match:<32} {pl:>4.0f}% {pe:>4.0f}% {pv:>4.0f}%  {pred}")
-    lines.append("```")
-
-    top = latest.get('top_quinielas') or []
-    if top:
-        lines.append("")
-        lines.append("*Top quinielas*")
-        for q in top[:5]:
-            quiniela = q.get('quiniela', [])
-            if isinstance(quiniela, list):
-                quiniela = ''.join(quiniela)
-            prob = q.get('joint_prob') or q.get('prob') or 0
-            lines.append(f"`{quiniela}` p={prob:.2e}")
-
-    return "\n".join(lines)
 
 
 def send():
@@ -83,17 +34,22 @@ def send():
         return 1
 
     latest_path = config.PROJECT_ROOT / 'predictions' / 'latest.json'
-    if not latest_path.exists():
-        logger.error(f"{latest_path} not found — run predict first")
+    latest = {}
+    if latest_path.exists():
+        try:
+            latest = json.loads(latest_path.read_text())
+        except Exception:
+            latest = {}
+    concurso = latest.get('concurso_number') or database.get_latest_concurso_number()
+    if not concurso:
+        logger.error("no concurso available — run predict + scrape first")
+        return 2
+    _header, games = database.get_concurso_with_games(concurso)
+    if not games:
+        logger.error(f"concurso {concurso} has no games in DB")
         return 2
 
-    latest = json.loads(latest_path.read_text())
-    concurso = latest.get('concurso_number')
-    header, games = (None, [])
-    if concurso:
-        header, games = database.get_concurso_with_games(concurso)
-
-    text = _format_message(latest, header, games)
+    text = format_concurso_message(concurso, games, latest=latest)
     res = requests.post(
         TELEGRAM_API.format(token=token),
         json={'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'},
