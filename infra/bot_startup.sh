@@ -23,7 +23,9 @@ cd "$WORK_DIR"
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+# Bot only needs a slim subset (no pandas/sklearn/xgboost). Saves ~1.3GB
+# of disk + many minutes of install on e2-micro.
+pip install -r requirements_bot.txt
 
 gsutil cp "gs://$BUCKET/secrets/.env" "$WORK_DIR/.env" || echo "no .env in bucket"
 

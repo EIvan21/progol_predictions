@@ -1,6 +1,5 @@
 import json
 import sqlite3
-import pandas as pd
 import logging
 
 from src.progol.config import DB_PATH, DATA_DIR
@@ -240,6 +239,9 @@ def get_latest_match_date(league_id, season):
 
 
 def get_all_matches_df():
+    # pandas is heavy and only the trainer pipeline calls this. Lazy-import
+    # so the slim bot VM doesn't need pandas/numpy in its environment.
+    import pandas as pd
     conn = get_connection()
     df = pd.read_sql_query("SELECT * FROM matches WHERE status = 'FT'", conn)
     conn.close()
