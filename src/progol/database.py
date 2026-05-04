@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import pandas as pd
 import logging
@@ -91,6 +92,52 @@ def init_db():
         )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concurso_games_fixture ON progol_concurso_games(fixture_id)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_users (
+            chat_id INTEGER PRIMARY KEY,
+            user_id INTEGER,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            role TEXT NOT NULL DEFAULT 'pending',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT
+        )
+    ''')
+    # Migration for DBs created before user_id existed. SQLite raises
+    # OperationalError on duplicate add — swallow it so init_db stays
+    # idempotent.
+    try:
+        cursor.execute("ALTER TABLE bot_users ADD COLUMN user_id INTEGER")
+    except sqlite3.OperationalError:
+        pass
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_user_id ON bot_users(user_id)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_threads (
+            thread_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            topic TEXT NOT NULL,
+            state_json TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            started_at TEXT NOT NULL,
+            closed_at TEXT,
+            FOREIGN KEY (chat_id) REFERENCES bot_users(chat_id)
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_threads_chat ON bot_threads(chat_id, status)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS bot_messages (
+            message_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            thread_id INTEGER,
+            direction TEXT NOT NULL,
+            command TEXT,
+            text TEXT,
+            created_at TEXT NOT NULL
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_messages_chat ON bot_messages(chat_id, created_at)")
     conn.commit()
     conn.close()
     logging.info("Database initialized with Alpha Signal schema.")
@@ -287,3 +334,126 @@ def get_latest_concurso_number():
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# --- Bot auth + conversation persistence ---------------------------------
+
+def bot_get_user(chat_id):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM bot_users WHERE chat_id=?", (chat_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def bot_upsert_user(chat_id, user_id=None, username=None, first_name=None,
+                    last_name=None, role=None, status=None):
+    """Insert as 'pending' on first contact; refresh profile + last_seen_at on
+    every subsequent message. role/status are only changed when explicitly
+    passed (otherwise preserved across calls)."""
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO bot_users (chat_id, user_id, username, first_name, last_name,
+                               role, status, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, COALESCE(?, 'pending'), COALESCE(?, 'pending'),
+                datetime('now'), datetime('now'))
+        ON CONFLICT(chat_id) DO UPDATE SET
+            user_id=COALESCE(excluded.user_id, user_id),
+            username=COALESCE(excluded.username, username),
+            first_name=COALESCE(excluded.first_name, first_name),
+            last_name=COALESCE(excluded.last_name, last_name),
+            role=COALESCE(?, role),
+            status=COALESCE(?, status),
+            last_seen_at=datetime('now')
+    ''', (chat_id, user_id, username, first_name, last_name, role, status,
+          role, status))
+    conn.commit()
+    conn.close()
+
+
+def bot_set_role(chat_id, role, status=None):
+    conn = get_connection()
+    if status is not None:
+        cur = conn.execute(
+            "UPDATE bot_users SET role=?, status=? WHERE chat_id=?",
+            (role, status, chat_id),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE bot_users SET role=? WHERE chat_id=?",
+            (role, chat_id),
+        )
+    n = cur.rowcount
+    conn.commit()
+    conn.close()
+    return n
+
+
+def bot_list_users():
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM bot_users ORDER BY created_at DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def bot_is_authorized(chat_id, allowed_roles=('owner', 'admin', 'user')):
+    user = bot_get_user(chat_id)
+    if not user:
+        return False
+    return user['status'] == 'active' and user['role'] in allowed_roles
+
+
+def bot_log_message(chat_id, direction, text, command=None, thread_id=None):
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO bot_messages (chat_id, thread_id, direction, command, text, created_at)
+        VALUES (?, ?, ?, ?, ?, datetime('now'))
+    ''', (chat_id, thread_id, direction, command, text))
+    conn.commit()
+    conn.close()
+
+
+def bot_open_thread(chat_id, topic, state=None):
+    state_json = json.dumps(state) if state is not None else None
+    conn = get_connection()
+    cur = conn.execute('''
+        INSERT INTO bot_threads (chat_id, topic, state_json, status, started_at)
+        VALUES (?, ?, ?, 'open', datetime('now'))
+    ''', (chat_id, topic, state_json))
+    tid = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return tid
+
+
+def bot_get_open_thread(chat_id, topic):
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute('''
+        SELECT * FROM bot_threads
+        WHERE chat_id=? AND topic=? AND status='open'
+        ORDER BY started_at DESC LIMIT 1
+    ''', (chat_id, topic)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def bot_set_thread_state(thread_id, state):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE bot_threads SET state_json=? WHERE thread_id=?",
+        (json.dumps(state), thread_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def bot_close_thread(thread_id):
+    conn = get_connection()
+    conn.execute(
+        "UPDATE bot_threads SET status='closed', closed_at=datetime('now') WHERE thread_id=?",
+        (thread_id,),
+    )
+    conn.commit()
+    conn.close()

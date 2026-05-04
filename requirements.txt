@@ -20,5 +20,6 @@ fpdf2==2.8.1
 pylatex==1.4.2
 python-dotenv==1.0.1
 google-cloud-storage==2.18.2
+python-telegram-bot==20.7
 pytest==8.3.3
 pytest-cov==5.0.0
