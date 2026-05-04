@@ -360,9 +360,13 @@ def main():
     if not token:
         raise SystemExit("TELEGRAM_BOT_TOKEN missing")
 
-    database.init_db()
+    # Sync first (overwrites progol.db from GCS), THEN init both schemas.
+    # Bot tables live in bot.db which the sync never touches, so the
+    # owner row survives across restarts.
     _gcs_sync()
-    logger.info("starting bot (auth backed by bot_users table)")
+    database.init_db()
+    database.init_bot_db()
+    logger.info("starting bot (auth backed by bot.db)")
 
     app = Application.builder().token(token).build()
 

@@ -16,6 +16,10 @@ LOG_DIR = PROJECT_ROOT / "logs"
 
 DB_PATH = DATA_DIR / "progol.db"
 PREDICTIONS_DB_PATH = DATA_DIR / "predictions.db"
+# Bot auth/threads/messages live in a separate sqlite file so the bot VM's
+# `gsutil rsync` from GCS (which overwrites progol.db with the trainer's
+# version) cannot wipe bot user state.
+BOT_DB_PATH = DATA_DIR / "bot.db"
 TRAIN_CSV = PROCESSED_DATA_DIR / "final_train_data.csv"
 PRIMARY_MODEL_PATH = MODEL_DIR / "calibrated_ensemble.pkl"
 METRICS_PATH = MODEL_DIR / "metrics.json"

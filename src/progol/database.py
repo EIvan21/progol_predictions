@@ -2,12 +2,19 @@ import json
 import sqlite3
 import logging
 
-from src.progol.config import DB_PATH, DATA_DIR
+from src.progol.config import DB_PATH, BOT_DB_PATH, DATA_DIR
 
 
 def get_connection():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     return sqlite3.connect(DB_PATH)
+
+
+def get_bot_connection():
+    """Bot auth/state DB, kept separate from the trainer's progol.db so a
+    GCS rsync that replaces progol.db can't wipe bot_users."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(BOT_DB_PATH)
 
 
 def init_db():
@@ -91,6 +98,15 @@ def init_db():
         )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concurso_games_fixture ON progol_concurso_games(fixture_id)")
+    conn.commit()
+    conn.close()
+    logging.info("Database initialized with Alpha Signal schema.")
+
+
+def init_bot_db():
+    """Bot-only schema in a separate sqlite file (`bot.db`)."""
+    conn = get_bot_connection()
+    cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bot_users (
             chat_id INTEGER PRIMARY KEY,
@@ -104,13 +120,6 @@ def init_db():
             last_seen_at TEXT
         )
     ''')
-    # Migration for DBs created before user_id existed. SQLite raises
-    # OperationalError on duplicate add — swallow it so init_db stays
-    # idempotent.
-    try:
-        cursor.execute("ALTER TABLE bot_users ADD COLUMN user_id INTEGER")
-    except sqlite3.OperationalError:
-        pass
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_users_user_id ON bot_users(user_id)")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS bot_threads (
@@ -139,7 +148,7 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_bot_messages_chat ON bot_messages(chat_id, created_at)")
     conn.commit()
     conn.close()
-    logging.info("Database initialized with Alpha Signal schema.")
+    logging.info("Bot database initialized.")
 
 
 def upsert_team(team_id, payload):
@@ -341,7 +350,7 @@ def get_latest_concurso_number():
 # --- Bot auth + conversation persistence ---------------------------------
 
 def bot_get_user(chat_id):
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM bot_users WHERE chat_id=?", (chat_id,)).fetchone()
     conn.close()
@@ -353,7 +362,7 @@ def bot_upsert_user(chat_id, user_id=None, username=None, first_name=None,
     """Insert as 'pending' on first contact; refresh profile + last_seen_at on
     every subsequent message. role/status are only changed when explicitly
     passed (otherwise preserved across calls)."""
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.execute('''
         INSERT INTO bot_users (chat_id, user_id, username, first_name, last_name,
                                role, status, created_at, last_seen_at)
@@ -374,7 +383,7 @@ def bot_upsert_user(chat_id, user_id=None, username=None, first_name=None,
 
 
 def bot_set_role(chat_id, role, status=None):
-    conn = get_connection()
+    conn = get_bot_connection()
     if status is not None:
         cur = conn.execute(
             "UPDATE bot_users SET role=?, status=? WHERE chat_id=?",
@@ -392,7 +401,7 @@ def bot_set_role(chat_id, role, status=None):
 
 
 def bot_list_users():
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM bot_users ORDER BY created_at DESC").fetchall()
     conn.close()
@@ -407,7 +416,7 @@ def bot_is_authorized(chat_id, allowed_roles=('owner', 'admin', 'user')):
 
 
 def bot_log_message(chat_id, direction, text, command=None, thread_id=None):
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.execute('''
         INSERT INTO bot_messages (chat_id, thread_id, direction, command, text, created_at)
         VALUES (?, ?, ?, ?, ?, datetime('now'))
@@ -418,7 +427,7 @@ def bot_log_message(chat_id, direction, text, command=None, thread_id=None):
 
 def bot_open_thread(chat_id, topic, state=None):
     state_json = json.dumps(state) if state is not None else None
-    conn = get_connection()
+    conn = get_bot_connection()
     cur = conn.execute('''
         INSERT INTO bot_threads (chat_id, topic, state_json, status, started_at)
         VALUES (?, ?, ?, 'open', datetime('now'))
@@ -430,7 +439,7 @@ def bot_open_thread(chat_id, topic, state=None):
 
 
 def bot_get_open_thread(chat_id, topic):
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.row_factory = sqlite3.Row
     row = conn.execute('''
         SELECT * FROM bot_threads
@@ -442,7 +451,7 @@ def bot_get_open_thread(chat_id, topic):
 
 
 def bot_set_thread_state(thread_id, state):
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.execute(
         "UPDATE bot_threads SET state_json=? WHERE thread_id=?",
         (json.dumps(state), thread_id),
@@ -452,7 +461,7 @@ def bot_set_thread_state(thread_id, state):
 
 
 def bot_close_thread(thread_id):
-    conn = get_connection()
+    conn = get_bot_connection()
     conn.execute(
         "UPDATE bot_threads SET status='closed', closed_at=datetime('now') WHERE thread_id=?",
         (thread_id,),

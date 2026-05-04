@@ -12,7 +12,7 @@ from src.progol import database
 
 
 def cmd_add(args):
-    database.init_db()
+    database.init_bot_db()
     # In a Telegram private chat, user_id == chat_id. Default to that if the
     # caller didn't pass --user-id explicitly, so the column is populated
     # even on the first seed before the user has DM'd the bot.
@@ -29,19 +29,19 @@ def cmd_add(args):
 
 
 def cmd_approve(args):
-    database.init_db()
+    database.init_bot_db()
     n = database.bot_set_role(args.chat_id, role=args.role, status='active')
     print(f"chat_id={args.chat_id} -> {args.role}/active ({n} row{'s' if n != 1 else ''})")
 
 
 def cmd_block(args):
-    database.init_db()
+    database.init_bot_db()
     n = database.bot_set_role(args.chat_id, role='blocked', status='blocked')
     print(f"chat_id={args.chat_id} blocked ({n} row{'s' if n != 1 else ''})")
 
 
 def cmd_list(_args):
-    database.init_db()
+    database.init_bot_db()
     users = database.bot_list_users()
     if not users:
         print("(no users)")
