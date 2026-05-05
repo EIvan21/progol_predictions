@@ -53,12 +53,14 @@ gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:$SA_EMAIL" \
   --role=roles/compute.instanceAdmin.v1
 
-echo "==> Creating Spot VM: $VM_NAME ..."
+echo "==> Creating VM: $VM_NAME ..."
+# STANDARD provisioning (was SPOT) — Spot preemptions silently truncated
+# weekly runs. The trainer only runs ~30-50 min once a week, so the
+# preemption-resistance trade-off favors STANDARD pricing.
 gcloud compute instances create "$VM_NAME" \
   --zone="$ZONE" \
   --machine-type=e2-standard-4 \
-  --provisioning-model=SPOT \
-  --instance-termination-action=STOP \
+  --provisioning-model=STANDARD \
   --image-family=debian-12 \
   --image-project=debian-cloud \
   --boot-disk-size=20GB \
