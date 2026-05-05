@@ -98,6 +98,23 @@ def init_db():
         )
     ''')
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_concurso_games_fixture ON progol_concurso_games(fixture_id)")
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS match_predictions (
+            fixture_id INTEGER PRIMARY KEY,
+            league_id INTEGER,
+            date TEXT,
+            home_id INTEGER,
+            away_id INTEGER,
+            home_name TEXT,
+            away_name TEXT,
+            predicted_label INTEGER,
+            predicted_probs TEXT,
+            model_version TEXT,
+            generated_at TEXT
+        )
+    ''')
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_pred_teams ON match_predictions(home_id, away_id, date)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_match_pred_date ON match_predictions(date)")
     conn.commit()
     conn.close()
     logging.info("Database initialized with Alpha Signal schema.")
@@ -345,6 +362,93 @@ def get_latest_concurso_number():
     row = cur.fetchone()
     conn.close()
     return row[0] if row else None
+
+
+# --- Upcoming match predictions (rolling 7-day window) -------------------
+
+def upsert_match_prediction(fixture_id, league_id, date, home_id, away_id,
+                            home_name, away_name, predicted_label,
+                            predicted_probs, model_version):
+    """Persist (or refresh) a single fixture's prediction. Trainer pre-computes
+    these for fixtures with status != 'FT' in the next ~7 days so the bot can
+    answer /predecir_partido for arbitrary upcoming matches without re-running
+    the ML pipeline. predicted_probs is a dict like {'L':..,'E':..,'V':..}."""
+    conn = get_connection()
+    conn.execute('''
+        INSERT INTO match_predictions
+            (fixture_id, league_id, date, home_id, away_id,
+             home_name, away_name, predicted_label, predicted_probs,
+             model_version, generated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(fixture_id) DO UPDATE SET
+            league_id=excluded.league_id, date=excluded.date,
+            home_id=excluded.home_id, away_id=excluded.away_id,
+            home_name=excluded.home_name, away_name=excluded.away_name,
+            predicted_label=excluded.predicted_label,
+            predicted_probs=excluded.predicted_probs,
+            model_version=excluded.model_version,
+            generated_at=datetime('now')
+    ''', (fixture_id, league_id, date, home_id, away_id,
+          home_name, away_name, predicted_label,
+          json.dumps(predicted_probs), model_version))
+    conn.commit()
+    conn.close()
+
+
+def get_upcoming_match_prediction(team_a_id, team_b_id, days_ahead=7):
+    """Returns the soonest upcoming match prediction between these two teams
+    in either order, or None. Order-agnostic so the user can type the teams
+    either way."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    hi = now + timedelta(days=days_ahead)
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    row = conn.execute('''
+        SELECT * FROM match_predictions
+        WHERE ((home_id=? AND away_id=?) OR (home_id=? AND away_id=?))
+          AND date >= ? AND date < ?
+        ORDER BY date ASC
+        LIMIT 1
+    ''', (team_a_id, team_b_id, team_b_id, team_a_id,
+          now.isoformat(), hi.isoformat())).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def cleanup_old_match_predictions(stale_after_days=1):
+    """Drop predictions whose kickoff is more than N days in the past so the
+    table stays bounded. Called from predict.py before refilling."""
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM match_predictions WHERE date < datetime('now', ?)",
+        (f"-{stale_after_days} day",),
+    )
+    n = conn.total_changes
+    conn.commit()
+    conn.close()
+    return n
+
+
+def resolve_team_id_by_name(name, threshold=80):
+    """Fuzzy-match `name` against the teams table. Returns (team_id, score).
+    Used by the bot to resolve free-form input to a team_id before looking
+    up `match_predictions`."""
+    from thefuzz import fuzz
+    from src.progol.ingest.get_progol_ids import clean_name
+    cleaned = clean_name(name)
+    conn = get_connection()
+    rows = conn.execute("SELECT team_id, name FROM teams WHERE name IS NOT NULL").fetchall()
+    conn.close()
+    best_id, best_score = None, 0
+    for tid, n in rows:
+        if not n:
+            continue
+        score = fuzz.token_sort_ratio(cleaned, clean_name(n))
+        if score > best_score:
+            best_score = score
+            best_id = tid
+    return (best_id if best_score >= threshold else None, best_score)
 
 
 # --- Bot auth + conversation persistence ---------------------------------

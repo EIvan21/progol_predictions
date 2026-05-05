@@ -125,8 +125,44 @@ def format_users_list(users):
     return "\n".join(lines)
 
 
+def format_upcoming_match_prediction(prediction):
+    """One-line response for /predecir_partido fallback (arbitrary upcoming
+    fixture, not in current concurso). `prediction` is a match_predictions
+    row as a dict."""
+    h = _md_escape((prediction.get('home_name') or '?').upper())
+    a = _md_escape((prediction.get('away_name') or '?').upper())
+    probs = _decode_probs(prediction.get('predicted_probs'))
+    if not probs:
+        return f"*{h}* vs *{a}*\n_sin predicción_"
+    label_idx = max(range(3), key=lambda k: probs[k])
+    pred = ['L', 'E', 'V'][label_idx]
+    cells = [
+        f"L {probs[0]*100:.0f}%",
+        f"E {probs[1]*100:.0f}%",
+        f"V {probs[2]*100:.0f}%",
+    ]
+    cells[label_idx] = f"*{cells[label_idx]}*"
+    date_str = prediction.get('date') or ''
+    try:
+        ts = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        date_str = ts.strftime('%a %Y-%m-%d %H:%M UTC')
+    except (ValueError, AttributeError):
+        pass
+    model_v = prediction.get('model_version')
+    meta_line = f"_{date_str}"
+    if model_v:
+        meta_line += f" · modelo `{model_v}`"
+    meta_line += "_"
+    return (
+        f"*{h}* vs *{a}*\n"
+        f"{meta_line}\n"
+        f"{' · '.join(cells)}\n"
+        f"Predicción: *{pred}*"
+    )
+
+
 def format_match_prediction(concurso_number, game, probs):
-    """One-game response for /predecir_partido."""
+    """One-game response for /predecir_partido (active concurso)."""
     h = _md_escape((game.get('home_name') or '?').upper())
     a = _md_escape((game.get('away_name') or '?').upper())
     label_idx = max(range(3), key=lambda k: probs[k])

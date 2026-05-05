@@ -76,6 +76,75 @@ def _log_prediction(row: dict):
     conn.close()
 
 
+def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
+                              feature_stats, days_ahead=7):
+    """Score every fixture in `matches` with status != 'FT' whose kickoff is
+    within `days_ahead` days. Persists to `match_predictions` for the bot to
+    serve `/predecir_partido` for non-Progol matches.
+
+    Skips bookmaker odds (would be N extra API-Football calls per run); the
+    bot tags these as model-only via the dedicated table. Temperature is
+    applied for parity with the Progol path."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    hi = now + timedelta(days=days_ahead)
+
+    database.cleanup_old_match_predictions(stale_after_days=1)
+
+    conn = database.get_connection()
+    rows = conn.execute("""
+        SELECT m.fixture_id, m.league_id, m.date, m.home_id, m.away_id,
+               m.venue, m.referee, h.name as home_name, a.name as away_name
+        FROM matches m
+        LEFT JOIN teams h ON h.team_id = m.home_id
+        LEFT JOIN teams a ON a.team_id = m.away_id
+        WHERE COALESCE(m.status, '') != 'FT'
+          AND m.date >= ? AND m.date < ?
+        ORDER BY m.date
+    """, (now.isoformat(), hi.isoformat())).fetchall()
+
+    written = failed = 0
+    for fid, league_id, date, h_id, a_id, venue, referee, h_name, a_name in rows:
+        try:
+            row = build_inference_row(
+                conn, home_id=h_id, away_id=a_id,
+                league_id=league_id, date=date,
+                venue=venue or "Unknown",
+                referee=referee or "Unknown",
+                market_probs=(0.45, 0.25, 0.30),
+            )
+            X = pd.DataFrame([row])[feature_cols]
+            model_probs = model.predict_proba(X)[0]
+            if abs(temperature - 1.0) > 1e-3:
+                eps = 1e-12
+                clipped = np.clip(model_probs, eps, 1.0)
+                scaled = np.exp(np.log(clipped) / temperature)
+                model_probs = scaled / scaled.sum()
+            label = int(np.argmax(model_probs))
+            database.upsert_match_prediction(
+                fixture_id=fid, league_id=league_id, date=date,
+                home_id=h_id, away_id=a_id,
+                home_name=h_name or '', away_name=a_name or '',
+                predicted_label=label,
+                predicted_probs={
+                    'L': float(model_probs[0]),
+                    'E': float(model_probs[1]),
+                    'V': float(model_probs[2]),
+                },
+                model_version=model_version,
+            )
+            written += 1
+        except Exception as exc:
+            failed += 1
+            logger.warning(f"upcoming_predict_failed fixture={fid}: {exc}")
+    conn.close()
+    logger.info("upcoming_predictions_persisted",
+                extra={'written': written, 'failed': failed,
+                       'window_days': days_ahead})
+    print(f"\nUpcoming fixtures predicted: {written} (failed {failed}, window {days_ahead}d)")
+    return written
+
+
 def predict_progol(match_ids, slate_meta=None):
     configure_logging()
     _init_predictions_db()
@@ -232,6 +301,18 @@ def predict_progol(match_ids, slate_meta=None):
         gcs.upload_file(latest_path, "predictions/latest.json")
 
     gcs.upload_file(config.PREDICTIONS_DB_PATH, "predictions/predictions.db")
+
+    # Pre-compute predictions for arbitrary upcoming fixtures (next 7 days)
+    # so the bot's /predecir_partido can answer for matches outside the
+    # current Progol slate. Best-effort — never blocks the Progol path.
+    try:
+        predict_upcoming_fixtures(
+            model=model, feature_cols=feature_cols,
+            model_version=model_version, temperature=temperature,
+            feature_stats=feature_stats, days_ahead=7,
+        )
+    except Exception as exc:
+        logger.warning(f"upcoming_predict_pass_failed: {exc}")
 
 
 if __name__ == "__main__":

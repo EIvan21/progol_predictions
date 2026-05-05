@@ -36,6 +36,7 @@ from src.progol.bot.formatting import (
     format_concurso_message,
     format_users_list,
     format_match_prediction,
+    format_upcoming_match_prediction,
 )
 from src.progol.ingest.get_progol_ids import clean_name
 
@@ -48,7 +49,7 @@ HELP_TEXT = (
     "Comandos:\n"
     "/ultima\\_prediccion\\_progol — última predicción guardada\n"
     "/predecir\\_progol — predicción del concurso actual (sincroniza primero)\n"
-    "/predecir\\_partido EQUIPO\\_A vs EQUIPO\\_B — predicción de un partido del slate\n"
+    "/predecir\\_partido EQUIPO\\_A vs EQUIPO\\_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
     "/whoami — tu chat\\_id, rol y status\n"
     "/help — esta ayuda"
 )
@@ -251,50 +252,57 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    concurso, _header, games, latest = _load_latest()
-    if not concurso or not games:
-        await update.message.reply_text("No hay un concurso activo en la base.")
-        return
+    from src.progol.bot.formatting import _decode_probs
 
+    # 1) Try the active concurso slate first.
+    concurso, _header, games, latest = _load_latest()
     a_clean = clean_name(a_in)
     b_clean = clean_name(b_in)
-    best_score = 0
-    best_game = None
-    for g in games:
-        s_h = fuzz.token_sort_ratio(a_clean, clean_name(g['home_name']))
-        s_a = fuzz.token_sort_ratio(b_clean, clean_name(g['away_name']))
-        score = (s_h + s_a) / 2
-        if score > best_score:
-            best_score = score
-            best_game = g
 
-    if not best_game or best_score < 70:
+    if concurso and games:
+        best_score = 0
+        best_game = None
+        for g in games:
+            s_h = fuzz.token_sort_ratio(a_clean, clean_name(g['home_name']))
+            s_a = fuzz.token_sort_ratio(b_clean, clean_name(g['away_name']))
+            score = (s_h + s_a) / 2
+            if score > best_score:
+                best_score = score
+                best_game = g
+        if best_game and best_score >= 70:
+            probs = _decode_probs(best_game.get('predicted_probs'))
+            if probs is None:
+                preds = latest.get('predictions', [])
+                idx = best_game['game_number'] - 1
+                if 0 <= idx < len(preds):
+                    p = preds[idx]
+                    probs = [p['L'], p['E'], p['V']]
+            if probs:
+                await update.message.reply_text(
+                    format_match_prediction(concurso, best_game, probs),
+                    parse_mode='Markdown',
+                )
+                return
+
+    # 2) Fallback: arbitrary upcoming fixture from match_predictions.
+    a_id, a_score = database.resolve_team_id_by_name(a_in)
+    b_id, b_score = database.resolve_team_id_by_name(b_in)
+    if not a_id or not b_id:
         await update.message.reply_text(
-            f"No encontré ese partido en el concurso {concurso} "
-            f"(mejor coincidencia: {best_score:.0f})."
-        )
-        return
-
-    from src.progol.bot.formatting import _decode_probs
-    probs = _decode_probs(best_game.get('predicted_probs'))
-    if probs is None:
-        preds = latest.get('predictions', [])
-        idx = best_game['game_number'] - 1
-        if 0 <= idx < len(preds):
-            p = preds[idx]
-            probs = [p['L'], p['E'], p['V']]
-
-    if not probs:
-        await update.message.reply_text(
-            f"Encontré *{best_game['home_name']} vs {best_game['away_name']}* "
-            f"(juego {best_game['game_number']}) pero no hay predicción guardada.",
+            f"No encontré los equipos en la base.\n"
+            f"`{a_in}` → score {a_score}\n"
+            f"`{b_in}` → score {b_score}",
             parse_mode='Markdown',
         )
         return
-
+    pred = database.get_upcoming_match_prediction(a_id, b_id, days_ahead=7)
+    if not pred:
+        await update.message.reply_text(
+            "No hay un partido próximo entre esos equipos en los siguientes 7 días."
+        )
+        return
     await update.message.reply_text(
-        format_match_prediction(concurso, best_game, probs),
-        parse_mode='Markdown',
+        format_upcoming_match_prediction(pred), parse_mode='Markdown'
     )
 
 
