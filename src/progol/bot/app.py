@@ -275,12 +275,8 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    probs = None
-    if best_game.get('predicted_probs'):
-        try:
-            probs = json.loads(best_game['predicted_probs'])
-        except Exception:
-            probs = None
+    from src.progol.bot.formatting import _decode_probs
+    probs = _decode_probs(best_game.get('predicted_probs'))
     if probs is None:
         preds = latest.get('predictions', [])
         idx = best_game['game_number'] - 1

@@ -22,11 +22,15 @@ def _md_escape(s):
 
 def _decode_probs(raw):
     """progol_concurso_games.predicted_probs is a JSON-encoded TEXT column.
-    Returns a [L, E, V] list of floats, or None on failure."""
+    The trainer writes it as a dict `{"L":..., "E":..., "V":...}`, but we
+    also accept a 3-list for forward-compat. Returns a [L, E, V] list of
+    floats, or None on failure."""
     if not raw:
         return None
     try:
         v = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(v, dict):
+            return [float(v['L']), float(v['E']), float(v['V'])]
         if isinstance(v, list) and len(v) == 3:
             return [float(x) for x in v]
     except Exception:
