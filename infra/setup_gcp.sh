@@ -61,8 +61,8 @@ gcloud compute instances create "$VM_NAME" \
   --instance-termination-action=STOP \
   --image-family=debian-12 \
   --image-project=debian-cloud \
-  --boot-disk-size=50GB \
-  --boot-disk-type=pd-balanced \
+  --boot-disk-size=20GB \
+  --boot-disk-type=pd-standard \
   --service-account="$SA_EMAIL" \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
   --metadata="enable-oslogin=TRUE,startup-script-url=gs://$BUCKET/scripts/startup.sh,gcs-bucket=$BUCKET,repo-url=$REPO_URL" \
