@@ -297,14 +297,11 @@ def predict_progol(match_ids, slate_meta=None):
         out_path.write_text(json.dumps(out, indent=2))
         latest_path = config.PROJECT_ROOT / 'predictions' / 'latest.json'
         latest_path.write_text(json.dumps(out, indent=2))
-        gcs.upload_file(out_path, f"predictions/{out_path.name}")
-        gcs.upload_file(latest_path, "predictions/latest.json")
 
-    gcs.upload_file(config.PREDICTIONS_DB_PATH, "predictions/predictions.db")
-
-    # Pre-compute predictions for arbitrary upcoming fixtures (next 7 days)
-    # so the bot's /predecir_partido can answer for matches outside the
-    # current Progol slate. Best-effort — never blocks the Progol path.
+    # Pre-compute predictions for arbitrary upcoming fixtures BEFORE any
+    # gcs.upload_file calls. Those uploads sometimes fail on this image's
+    # mTLS metadata server and would otherwise abort the upcoming pass;
+    # finalize's `gsutil rsync` handles uploads regardless.
     try:
         predict_upcoming_fixtures(
             model=model, feature_cols=feature_cols,
@@ -313,6 +310,24 @@ def predict_progol(match_ids, slate_meta=None):
         )
     except Exception as exc:
         logger.warning(f"upcoming_predict_pass_failed: {exc}")
+
+    # GCS uploads via the Python SDK are best-effort — finalize's
+    # `gsutil rsync` reliably picks up everything in predictions/ + the
+    # log dir. Wrap each call so a single failure can't take down the
+    # rest of the pipeline (or upcoming-fixture pass above).
+    if results:
+        try:
+            gcs.upload_file(out_path, f"predictions/{out_path.name}")
+        except Exception as exc:
+            logger.warning(f"gcs_upload_slate_failed: {exc}")
+        try:
+            gcs.upload_file(latest_path, "predictions/latest.json")
+        except Exception as exc:
+            logger.warning(f"gcs_upload_latest_failed: {exc}")
+    try:
+        gcs.upload_file(config.PREDICTIONS_DB_PATH, "predictions/predictions.db")
+    except Exception as exc:
+        logger.warning(f"gcs_upload_predictions_db_failed: {exc}")
 
 
 if __name__ == "__main__":
