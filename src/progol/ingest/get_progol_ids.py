@@ -31,6 +31,9 @@ NICKNAME_MAP = {
     "W. BREMEN": "WERDER BREMEN", "B. MUNICH": "BAYERN MUNICH", "INTER P.A.": "INTERNACIONAL",
     "VASCO DA GA": "VASCO DA GAMA", "SP. LISBOA": "SPORTING CP", "S. LAGUNA": "SANTOS LAGUNA",
     "MAN. UNITED": "MANCHESTER UNITED",
+    "ATLANTA": "ATLANTA UNITED", "LA GALAXY": "LOS ANGELES GALAXY",
+    "L.A. GALAXY": "LOS ANGELES GALAXY", "MINEIRO": "ATLETICO MINEIRO",
+    "AT. MINEIRO": "ATLETICO MINEIRO",
 }
 
 def clean_name(name):
@@ -96,8 +99,8 @@ def get_upcoming_api_fixtures(days_back=2, days_forward=5):
     date_to = (today + timedelta(days=days_forward)).isoformat()
     # Liga MX, Premier, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Brasil, Argentina,
     # Portugal, Eredivisie, Belgium, Championship, La Liga 2, Libertadores, UCL, UEL,
-    # Greek Super League, Bundesliga 2, Liga MX Expansion
-    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3, 197, 79, 263]
+    # Greek Super League, Bundesliga 2, Liga MX Expansion, Scottish Premiership
+    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3, 197, 79, 263, 179]
     all_f = []
     for lid in leagues:
         for sn in [2025, 2026]:
