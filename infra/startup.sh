@@ -56,6 +56,13 @@ pip install -r requirements.txt
 mkdir -p data data/processed models reports logs
 
 gsutil cp "gs://$BUCKET/secrets/.env" .env || echo "no secrets/.env in bucket"
+# python-dotenv reads .env from inside each module, but the bash gating below
+# (Telegram notify) needs the vars in the shell environment too. Source it.
+if [ -f .env ]; then
+  set -a
+  . ./.env
+  set +a
+fi
 gsutil -m rsync -r "gs://$BUCKET/db" data/ || echo "no db prefix in bucket"
 gsutil -m rsync -r "gs://$BUCKET/models" models/ || echo "no models prefix in bucket"
 
