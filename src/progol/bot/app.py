@@ -28,17 +28,27 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
 from thefuzz import fuzz
 
 from src.progol import config, database
 from src.progol.bot.formatting import (
+    _decode_probs,
+    format_budget_plan,
     format_concurso_message,
     format_users_list,
     format_match_prediction,
     format_upcoming_match_prediction,
 )
 from src.progol.ingest.get_progol_ids import clean_name
+from src.progol.modeling.quiniela import BASE_COST_MXN
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -46,10 +56,14 @@ logger = logging.getLogger(__name__)
 
 HELP_TEXT = (
     "*Progol Bot*\n\n"
-    "Comandos:\n"
+    "*Predicciones*\n"
     "/ultima\\_prediccion\\_progol — última predicción guardada\n"
     "/predecir\\_progol — predicción del concurso actual (sincroniza primero)\n"
     "/predecir\\_partido EQUIPO\\_A vs EQUIPO\\_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
+    "\n*Análisis*\n"
+    "/presupuesto — plan óptimo de dobles/triples para tu presupuesto\n"
+    "/cancelar — aborta una conversación en curso\n"
+    "\n*Cuenta*\n"
     "/whoami — tu chat\\_id, rol y status\n"
     "/help — esta ayuda"
 )
@@ -154,7 +168,10 @@ def _guard(level='user'):
                         pass
                 return
             try:
-                await handler(update, ctx)
+                # Return value matters for ConversationHandler entry points
+                # (state ID); plain CommandHandlers return None and are
+                # unaffected.
+                return await handler(update, ctx)
             except Exception as exc:
                 logger.exception(f"handler_error: {exc}")
                 if update.message:
@@ -252,8 +269,6 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    from src.progol.bot.formatting import _decode_probs
-
     # 1) Try the active concurso slate first.
     concurso, _header, games, latest = _load_latest()
     a_clean = clean_name(a_in)
@@ -304,6 +319,94 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_upcoming_match_prediction(pred), parse_mode='Markdown'
     )
+
+
+# --- /presupuesto conversation --------------------------------------------
+# State id for AWAIT_BUDGET. The conversation is per-chat per-user; entry is
+# `/presupuesto`, fallback `/cancelar`. Probs + slate are stashed in
+# ctx.user_data so the state handler doesn't have to re-load.
+
+AWAIT_BUDGET = 1
+
+
+async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    concurso, _header, games, _latest = _load_latest()
+    if not concurso or not games:
+        await update.message.reply_text("No hay concurso activo en la base.")
+        return ConversationHandler.END
+
+    main_games = sorted(games, key=lambda g: g['game_number'])[:14]
+    probs_list = []
+    for g in main_games:
+        p = _decode_probs(g.get('predicted_probs'))
+        if not p:
+            await update.message.reply_text(
+                f"Faltan predicciones en el concurso {concurso} "
+                f"(juego {g['game_number']}). Corre /predecir\\_progol primero.",
+                parse_mode='Markdown',
+            )
+            return ConversationHandler.END
+        probs_list.append(p)
+    if len(probs_list) < 14:
+        await update.message.reply_text(
+            f"El concurso {concurso} tiene solo {len(probs_list)} juegos cargados (esperaba 14)."
+        )
+        return ConversationHandler.END
+
+    ctx.user_data['budget_concurso'] = concurso
+    ctx.user_data['budget_probs'] = probs_list
+    ctx.user_data['budget_games'] = main_games
+    await update.message.reply_text(
+        f"*Concurso {concurso}* cargado.\n"
+        f"¿Cuál es tu presupuesto en MXN? (mínimo {int(BASE_COST_MXN)})\n"
+        f"Manda /cancelar para abortar.",
+        parse_mode='Markdown',
+    )
+    return AWAIT_BUDGET
+
+
+async def receive_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await _record_inbound(update)
+    text = (update.message.text or '').strip().replace('$', '').replace(',', '')
+    try:
+        budget = float(text)
+    except ValueError:
+        await update.message.reply_text(
+            "No entendí el monto. Manda solo un número (ej: 100). /cancelar para abortar."
+        )
+        return AWAIT_BUDGET
+    if budget < BASE_COST_MXN:
+        await update.message.reply_text(
+            f"El presupuesto mínimo es ${BASE_COST_MXN:.0f} MXN."
+        )
+        return AWAIT_BUDGET
+
+    probs_list = ctx.user_data.get('budget_probs') or []
+    games = ctx.user_data.get('budget_games') or []
+    concurso = ctx.user_data.get('budget_concurso')
+    if not probs_list:
+        await update.message.reply_text(
+            "Sesión perdida; vuelve a iniciar /presupuesto."
+        )
+        return ConversationHandler.END
+
+    import numpy as np
+    from src.progol.modeling.quiniela import optimize_budget
+
+    probs_arr = np.array(probs_list)
+    plan = optimize_budget(probs_arr, budget=budget)
+    msg = format_budget_plan(concurso, plan, games=games, budget_input=budget)
+    await update.message.reply_text(msg, parse_mode='Markdown')
+    for k in ('budget_probs', 'budget_games', 'budget_concurso'):
+        ctx.user_data.pop(k, None)
+    return ConversationHandler.END
+
+
+async def cmd_cancelar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    for k in ('budget_probs', 'budget_games', 'budget_concurso'):
+        ctx.user_data.pop(k, None)
+    await update.message.reply_text("Conversación cancelada.")
+    return ConversationHandler.END
 
 
 # --- Admin commands --------------------------------------------------------
@@ -383,6 +486,21 @@ def main():
     app.add_handler(CommandHandler('ultima_prediccion_progol', user_g(cmd_ultima)))
     app.add_handler(CommandHandler('predecir_progol', user_g(cmd_predecir_progol)))
     app.add_handler(CommandHandler('predecir_partido', user_g(cmd_predecir_partido)))
+
+    # /presupuesto conversation. Entry is guarded; the state handler doesn't
+    # need its own guard since it's only reachable after entry succeeds.
+    presupuesto_conv = ConversationHandler(
+        entry_points=[CommandHandler('presupuesto', user_g(cmd_presupuesto))],
+        states={
+            AWAIT_BUDGET: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, receive_budget),
+            ],
+        },
+        fallbacks=[CommandHandler('cancelar', cmd_cancelar)],
+        per_chat=True,
+        per_user=True,
+    )
+    app.add_handler(presupuesto_conv)
 
     admin_g = _guard('admin')
     app.add_handler(CommandHandler('usuarios', admin_g(cmd_usuarios)))

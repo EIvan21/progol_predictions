@@ -93,6 +93,12 @@ def format_concurso_message(concurso_number, games, latest=None,
         lines.append(f"    {' · '.join(cells)} → *{pred}*{suffix}")
         lines.append("")
 
+        # Progol = 14 main games + 7 revancha. Drop a section divider so the
+        # mobile reader can skim the main slate without paging through revancha.
+        if gn == 14 and any(g2['game_number'] > 14 for g2 in games):
+            lines.append("*— Revancha —*")
+            lines.append("")
+
     top = (latest or {}).get('top_quinielas') or []
     if top:
         lines.append("*Top quinielas*")
@@ -159,6 +165,54 @@ def format_upcoming_match_prediction(prediction):
         f"{' · '.join(cells)}\n"
         f"Predicción: *{pred}*"
     )
+
+
+def format_budget_plan(concurso_number, plan, games=None, budget_input=None):
+    """Markdown body for /presupuesto. Shows costo / cobertura / triples /
+    dobles up top, then a per-match line. `plan` is a quiniela.BudgetPlan;
+    `games` (optional) is the concurso's game rows so we can label each match
+    by team names instead of just match index."""
+    name_for = {}
+    if games:
+        for g in games:
+            name_for[g['game_number']] = (
+                f"{(g.get('home_name') or '?').upper()} vs "
+                f"{(g.get('away_name') or '?').upper()}"
+            )
+
+    base_cost = (plan.cost / plan.n_tickets) if plan.n_tickets else 0
+    lines = [f"*Plan optimizado — Progol {concurso_number}*", ""]
+    if budget_input is not None:
+        lines.append(f"_Presupuesto solicitado: ${budget_input:.2f} MXN_")
+    lines += [
+        f"Costo: *${plan.cost:.2f}* MXN — {plan.n_tickets} boletos "
+        f"a ${base_cost:.0f} c/u",
+        f"Cobertura: *{plan.coverage_prob*100:.4f}%*",
+        "_(prob. estimada de acertar los 14 juegos con esta combinación)_",
+        f"Triples ({len(plan.triples)}): "
+        + (", ".join(str(m+1) for m in sorted(plan.triples)) or "—"),
+        f"Dobles ({len(plan.doubles)}): "
+        + (", ".join(str(m+1) for m in sorted(plan.doubles)) or "—"),
+        "",
+        "*Por partido:*",
+    ]
+    kind_tag = {'triple': '*\\[T\\]*', 'double': '*\\[D\\]*', 'single': '\\[ \\]'}
+    for s in plan.matches_summary:
+        idx = s['match_index']
+        played = "/".join(s['played'])
+        p = s['probs']
+        nm = name_for.get(idx, '')
+        nm_disp = (nm[:36] + '…') if len(nm) > 36 else nm
+        nm_safe = _md_escape(nm_disp) if nm_disp else ''
+        head = f"{kind_tag[s['kind']]} *{idx}.*"
+        if nm_safe:
+            head += f" {nm_safe}"
+        lines.append(head)
+        lines.append(
+            f"    juega *{played}* · "
+            f"L:{p['L']*100:.0f}% E:{p['E']*100:.0f}% V:{p['V']*100:.0f}%"
+        )
+    return "\n".join(lines)
 
 
 def format_match_prediction(concurso_number, game, probs):
