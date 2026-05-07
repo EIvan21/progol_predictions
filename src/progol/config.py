@@ -36,6 +36,9 @@ FEATURE_COLS = [
     'xg_diff', 'elo_diff', 'rank_gap', 'momentum_diff', 'h2h_diff', 'is_artificial',
     'gf_ewma_diff', 'ga_ewma_diff', 'sf_ewma_diff', 'sos_gf_diff',
     'rest_diff',
+    # Draw-prone (averages, not diffs) — pushes E when both teams trend toward
+    # low-scoring or frequent draws.
+    'total_goals_avg', 'draw_rate_avg',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
 

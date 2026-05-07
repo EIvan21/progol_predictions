@@ -66,7 +66,9 @@ def _team_history(conn: sqlite3.Connection, team_id: int, before_date: str, limi
     df['sf'] = df['home_shots'].where(is_home, df['away_shots'])
     df['sa'] = df['away_shots'].where(is_home, df['home_shots'])
     df['opponent_id'] = df['away_id'].where(is_home, df['home_id'])
-    return df[['date', 'opponent_id', 'gf', 'ga', 'sf', 'sa']]
+    df['total_goals'] = df['gf'] + df['ga']
+    df['drew'] = (df['gf'] == df['ga']).astype(float)
+    return df[['date', 'opponent_id', 'gf', 'ga', 'sf', 'sa', 'total_goals', 'drew']]
 
 
 def _ewma_last(series: pd.Series, span: int = EWMA_SPAN, min_periods: int = 3) -> float:
@@ -80,7 +82,8 @@ def compute_team_ewma_block(conn, team_id, before_date, elo_table) -> dict:
     hist = _team_history(conn, team_id, before_date)
     if hist.empty:
         return {'gf_ewma': 0.0, 'ga_ewma': 0.0, 'sf_ewma': 0.0, 'sa_ewma': 0.0,
-                'w_gf_ewma': 0.0, 'w_sf_ewma': 0.0}
+                'w_gf_ewma': 0.0, 'w_sf_ewma': 0.0,
+                'total_goals_ewma': 0.0, 'drew_ewma': 0.0}
 
     sos = hist['opponent_id'].map(lambda oid: elo_table.get(int(oid), BASE_RATING) / 1500.0).fillna(1.0)
     hist = hist.assign(w_gf=hist['gf'] * sos, w_sf=hist['sf'] * sos)
@@ -92,6 +95,8 @@ def compute_team_ewma_block(conn, team_id, before_date, elo_table) -> dict:
         'sa_ewma': _ewma_last(hist['sa']),
         'w_gf_ewma': _ewma_last(hist['w_gf']),
         'w_sf_ewma': _ewma_last(hist['w_sf']),
+        'total_goals_ewma': _ewma_last(hist['total_goals']),
+        'drew_ewma': _ewma_last(hist['drew']),
     }
 
 
@@ -205,6 +210,8 @@ def build_inference_row(
         'sf_ewma_diff': h_block['sf_ewma'] - a_block['sf_ewma'],
         'sos_gf_diff': h_block['w_gf_ewma'] - a_block['w_gf_ewma'],
         'rest_diff': rest_h - rest_a,
+        'total_goals_avg': (h_block['total_goals_ewma'] + a_block['total_goals_ewma']) / 2.0,
+        'draw_rate_avg': (h_block['drew_ewma'] + a_block['drew_ewma']) / 2.0,
         'prob_market_h': market_probs[0],
         'prob_market_d': market_probs[1],
         'prob_market_a': market_probs[2],

@@ -58,6 +58,13 @@ def calculate_alpha_features(df):
     df['sf_ewma_diff'] = df['home_sf_ewma'] - df['away_sf_ewma']
     df['sos_gf_diff'] = df['home_w_gf_ewma'] - df['away_w_gf_ewma']
 
+    # Draw-prone signals — model used to never produce E as the modal pick
+    # because it had no symmetric features. Both are AVERAGES (not diffs)
+    # so when both teams are draw-prone or both play low-scoring matches,
+    # the value is high and pushes E up regardless of L/V asymmetry.
+    df['total_goals_avg'] = (df['home_total_goals_ewma'] + df['away_total_goals_ewma']) / 2.0
+    df['draw_rate_avg'] = (df['home_drew_ewma'] + df['away_drew_ewma']) / 2.0
+
     df['rank_gap'] = df['away_rank'].fillna(15) - df['home_rank'].fillna(15)
     df['momentum_h'] = df['home_form'].apply(_form_to_points)
     df['momentum_a'] = df['away_form'].apply(_form_to_points)

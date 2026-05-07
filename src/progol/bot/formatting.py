@@ -38,12 +38,29 @@ def _decode_probs(raw):
     return None
 
 
+TOSSUP_THRESHOLD = 0.05  # |P_top - P_2nd| < 5pp -> show both letters
+
+
+def _pick_label(probs):
+    """Return the display label for the model's top pick. When the gap
+    between top-1 and top-2 is below TOSSUP_THRESHOLD, we surface both
+    letters as `L/V` so the reader knows the modal pick is barely the
+    favorite — exactly the kind of match that should be played as a
+    double in /presupuesto."""
+    order = sorted(range(3), key=lambda k: -probs[k])
+    top = order[0]
+    second = order[1]
+    if probs[top] - probs[second] < TOSSUP_THRESHOLD:
+        return f"{'LEV'[top]}/{'LEV'[second]}", top
+    return 'LEV'[top], top
+
+
 def format_concurso_message(concurso_number, games, latest=None,
                             model_version=None, generated_at=None):
     """Build the Telegram body for a concurso. Works from DB-only data
     (the trainer fills `predicted_probs` in `progol_concurso_games`); if
-    `latest.json` is also available we surface model_version + top quinielas
-    on top of the per-game lines."""
+    `latest.json` is also available we surface model_version + the budget
+    plan on top of the per-game lines."""
     if latest is None:
         latest = {}
     model_version = model_version or latest.get('model_version')
@@ -75,8 +92,7 @@ def format_concurso_message(concurso_number, games, latest=None,
             lines.append("")
             continue
 
-        label_idx = max(range(3), key=lambda k: probs[k])
-        pred = ['L', 'E', 'V'][label_idx]
+        pred, label_idx = _pick_label(probs)
         cells = [
             f"L {probs[0]*100:.0f}%",
             f"E {probs[1]*100:.0f}%",
@@ -99,15 +115,24 @@ def format_concurso_message(concurso_number, games, latest=None,
             lines.append("*— Revancha —*")
             lines.append("")
 
-    top = (latest or {}).get('top_quinielas') or []
-    if top:
-        lines.append("*Top quinielas*")
-        for q in top[:5]:
-            quiniela = q.get('quiniela', [])
-            if isinstance(quiniela, list):
-                quiniela = ''.join(quiniela)
-            prob = q.get('joint_prob') or q.get('prob') or 0
-            lines.append(f"• `{quiniela}` _p={prob:.2e}_")
+    plan = (latest or {}).get('plan')
+    if plan:
+        budget = plan.get('budget')
+        cost = plan.get('cost', 0)
+        cov = plan.get('coverage_prob', 0) * 100
+        nt = plan.get('n_tickets', 0)
+        doubles = plan.get('doubles') or []
+        triples = plan.get('triples') or []
+        lines.append("*Plan recomendado*")
+        if budget is not None:
+            lines.append(f"_Presupuesto base: ${budget:.0f} MXN_")
+        lines.append(f"Costo: *${cost:.2f}* MXN — {nt} boletos")
+        lines.append(f"Cobertura: *{cov:.4f}%*")
+        if triples:
+            lines.append(f"Triples: {', '.join(str(m+1) for m in sorted(triples))}")
+        if doubles:
+            lines.append(f"Dobles: {', '.join(str(m+1) for m in sorted(doubles))}")
+        lines.append("_(usa /presupuesto para otro monto)_")
 
     return "\n".join(lines).rstrip()
 

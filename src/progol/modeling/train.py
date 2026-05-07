@@ -64,6 +64,42 @@ def apply_temperature(y_prob, T, eps=1e-12):
     return scaled / scaled.sum(axis=1, keepdims=True)
 
 
+def fit_dirichlet(y_prob, y_true, eps=1e-9):
+    """Dirichlet (matrix) calibration on the holdout set.
+
+    Treats log(y_prob) as a 3-d feature vector and fits a multinomial
+    logistic regression to predict y_true. With low regularization this
+    is the full Dirichlet calibrator (Kull et al. 2019); it can fix
+    per-class miscalibration that a single scalar temperature cannot,
+    e.g. systematic under-prediction of the draw class.
+
+    Returns the fitted LogisticRegression. Use `apply_dirichlet` to
+    transform raw probs at inference."""
+    y_prob = np.clip(y_prob, eps, 1.0)
+    log_probs = np.log(y_prob)
+    y_true = np.asarray(y_true)
+    # All 3 classes must be present; if not, fall back to identity.
+    if len(np.unique(y_true)) < 3:
+        return None
+    # sklearn 1.5+ defaults to multinomial for multi-class; passing
+    # multi_class kwarg now warns. C=1e4 is near-unregularized (full
+    # Dirichlet matrix scaling). lbfgs handles multinomial natively.
+    lr = LogisticRegression(max_iter=1000, C=1e4, solver='lbfgs')
+    lr.fit(log_probs, y_true)
+    # Reorder columns of coef/proba to match [0, 1, 2] in case classes_ differs.
+    if not np.array_equal(lr.classes_, np.array([0, 1, 2])):
+        return None
+    return lr
+
+
+def apply_dirichlet(y_prob, calibrator, eps=1e-9):
+    if calibrator is None:
+        return y_prob
+    y_prob = np.clip(y_prob, eps, 1.0)
+    log_probs = np.log(y_prob)
+    return calibrator.predict_proba(log_probs)
+
+
 def _build_base_pipeline(estimator):
     """TargetEncoder + StandardScaler + estimator. Refits per-fold inside CV
     so the encoder doesn't see fold validation targets."""
@@ -157,19 +193,41 @@ def train_heavy_model():
     loss = log_loss(y_test, y_prob, labels=[0, 1, 2])
     report = classification_report(y_test, y_pred, output_dict=True)
 
-    # Temperature scaling fit on the holdout. We tune T to minimize NLL,
-    # then re-evaluate to confirm it actually helped (sanity check —
-    # in rare cases the optimizer hits a boundary and post-loss > pre-loss).
+    # Dirichlet (matrix) calibration on the holdout — fixes per-class
+    # miscalibration that scalar temperature cannot. Specifically targets
+    # the draw class, which the stacked ensemble systematically under-
+    # predicts even after isotonic calibration on each base estimator.
+    # If Dirichlet fails to improve log-loss vs raw, fall back to scalar
+    # temperature (older behavior); if both fail, identity.
+    dirichlet_cal = fit_dirichlet(y_prob, y_test.values)
+    loss_dir = float('inf')
+    brier_dir = float('inf')
+    y_prob_dir = None
+    if dirichlet_cal is not None:
+        y_prob_dir = apply_dirichlet(y_prob, dirichlet_cal)
+        loss_dir = log_loss(y_test, y_prob_dir, labels=[0, 1, 2])
+        brier_dir = calculate_brier_score(y_test.values, y_prob_dir)
+
     T_opt, loss_before_T, loss_after_T = fit_temperature(y_prob, y_test.values)
-    if loss_after_T < loss_before_T:
-        logger.info(f"Temperature: T={T_opt:.3f}, log_loss {loss_before_T:.4f} -> {loss_after_T:.4f}")
+
+    if loss_dir < loss and loss_dir <= loss_after_T:
+        logger.info(f"Calibration: Dirichlet, log_loss {loss:.4f} -> {loss_dir:.4f}")
+        loss_T, brier_T = loss_dir, brier_dir
+        T_opt = 1.0
+        active_calibration = 'dirichlet'
+    elif loss_after_T < loss_before_T:
+        logger.info(f"Calibration: Temperature T={T_opt:.3f}, log_loss {loss:.4f} -> {loss_after_T:.4f}")
         y_prob_T = apply_temperature(y_prob, T_opt)
         loss_T = log_loss(y_test, y_prob_T, labels=[0, 1, 2])
         brier_T = calculate_brier_score(y_test.values, y_prob_T)
+        dirichlet_cal = None
+        active_calibration = 'temperature'
     else:
-        logger.info(f"Temperature: T={T_opt:.3f} did not improve, disabling (T=1.0)")
+        logger.info(f"Calibration: neither Dirichlet nor T improved, disabled")
         T_opt = 1.0
+        dirichlet_cal = None
         loss_T, brier_T = loss, brier
+        active_calibration = 'none'
 
     proxy = lgb.LGBMClassifier(n_estimators=100, verbose=-1)
     proxy_pipe = _build_base_pipeline(proxy)
@@ -178,9 +236,10 @@ def train_heavy_model():
 
     metrics = {
         "accuracy": acc, "log_loss": loss, "brier_score": brier,
-        "log_loss_temperature_scaled": loss_T,
-        "brier_score_temperature_scaled": brier_T,
+        "log_loss_calibrated": loss_T,
+        "brier_score_calibrated": brier_T,
         "temperature": T_opt,
+        "calibration": active_calibration,
         "classification_report": report, "feature_importance": feat_imp,
         "features": feature_cols,
         "lgb_params": lgb_params,
@@ -200,6 +259,8 @@ def train_heavy_model():
         'features': feature_cols,
         'version': version_dir.name,
         'temperature': T_opt,
+        'dirichlet_calibrator': dirichlet_cal,
+        'calibration': active_calibration,
     }
     joblib.dump(payload, version_dir / 'calibrated_ensemble.pkl')
     joblib.dump(payload, config.PRIMARY_MODEL_PATH)

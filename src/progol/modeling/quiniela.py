@@ -15,6 +15,7 @@ Two responsibilities:
 from __future__ import annotations
 
 import heapq
+from collections import Counter
 from dataclasses import dataclass
 from itertools import combinations
 from typing import Iterable
@@ -73,6 +74,38 @@ def top_n_quinielas(probs: np.ndarray, n: int = 10) -> list[dict]:
                 new_neg_logp = neg_logp + log_probs[m, picks[m]] - log_probs[m, new_outcome]
                 heapq.heappush(heap, (new_neg_logp, new_picks))
 
+    return results
+
+
+def mc_sample_quinielas(probs: np.ndarray, n: int = 10,
+                       seed: int = 42, max_attempts: int = 1000) -> list[dict]:
+    """Sample n unique quinielas independently per match weighted by P(L,E,V).
+
+    Greedy `top_n_quinielas` returns a tight cluster around the modal pick
+    (each result differs by 1-2 swaps). This samples n distinct tickets
+    drawn from the model's posterior — genuinely diverse, while still
+    weighted toward picks the model believes in.
+
+    Returned list is sorted by joint probability descending so the most
+    likely sampled ticket lands first."""
+    rng = np.random.default_rng(seed)
+    M = probs.shape[0]
+    log_probs = np.log(np.clip(probs, 1e-9, 1.0))
+    seen: set[tuple[int, ...]] = set()
+    results: list[dict] = []
+    attempts = 0
+    while len(results) < n and attempts < max_attempts * n:
+        picks = tuple(int(rng.choice(3, p=probs[m])) for m in range(M))
+        attempts += 1
+        if picks in seen:
+            continue
+        seen.add(picks)
+        joint = float(np.exp(sum(log_probs[i, p] for i, p in enumerate(picks))))
+        results.append({
+            'quiniela': [LABELS[p] for p in picks],
+            'joint_prob': joint,
+        })
+    results.sort(key=lambda r: -r['joint_prob'])
     return results
 
 

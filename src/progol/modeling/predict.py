@@ -76,8 +76,28 @@ def _log_prediction(row: dict):
     conn.close()
 
 
+def _apply_post_calibration(probs, temperature, dirichlet_cal):
+    """Reusable post-calibration: prefer Dirichlet (per-class) when fitted,
+    fall back to scalar temperature, else identity. `probs` is a 1-D vector
+    or a 2-D batch."""
+    p = np.asarray(probs)
+    single = p.ndim == 1
+    if single:
+        p = p[np.newaxis, :]
+    if dirichlet_cal is not None:
+        from src.progol.modeling.train import apply_dirichlet
+        p = apply_dirichlet(p, dirichlet_cal)
+    elif abs(temperature - 1.0) > 1e-3:
+        eps = 1e-12
+        clipped = np.clip(p, eps, 1.0)
+        scaled = np.exp(np.log(clipped) / temperature)
+        p = scaled / scaled.sum(axis=1, keepdims=True)
+    return p[0] if single else p
+
+
 def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
-                              feature_stats, days_ahead=7):
+                              feature_stats, days_ahead=7,
+                              dirichlet_cal=None):
     """Score every fixture in `matches` with status != 'FT' whose kickoff is
     within `days_ahead` days. Persists to `match_predictions` for the bot to
     serve `/predecir_partido` for non-Progol matches.
@@ -115,11 +135,7 @@ def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
             )
             X = pd.DataFrame([row])[feature_cols]
             model_probs = model.predict_proba(X)[0]
-            if abs(temperature - 1.0) > 1e-3:
-                eps = 1e-12
-                clipped = np.clip(model_probs, eps, 1.0)
-                scaled = np.exp(np.log(clipped) / temperature)
-                model_probs = scaled / scaled.sum()
+            model_probs = _apply_post_calibration(model_probs, temperature, dirichlet_cal)
             label = int(np.argmax(model_probs))
             database.upsert_match_prediction(
                 fixture_id=fid, league_id=league_id, date=date,
@@ -161,6 +177,7 @@ def predict_progol(match_ids, slate_meta=None):
     feature_cols = pkg['features']
     model_version = pkg.get('version', 'unversioned')
     temperature = float(pkg.get('temperature', 1.0))
+    dirichlet_cal = pkg.get('dirichlet_calibrator')
     feature_stats = drift.load_stats(config.FEATURE_STATS_PATH) or {}
 
     session = api_football_session()
@@ -174,7 +191,8 @@ def predict_progol(match_ids, slate_meta=None):
     # progol_concurso_games row; game_number is the 1-indexed position in match_ids.
     concurso_number = slate_meta.get('concurso_number') if slate_meta else None
 
-    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (T={temperature:.3f}, blend={blend_w:.2f})")
+    cal_label = pkg.get('calibration', 'temperature' if abs(temperature - 1.0) > 1e-3 else 'none')
+    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (cal={cal_label}, T={temperature:.3f}, blend={blend_w:.2f})")
     if concurso_number:
         print(f"Concurso: {concurso_number}")
 
@@ -208,13 +226,10 @@ def predict_progol(match_ids, slate_meta=None):
             X = pd.DataFrame([row])[feature_cols]
             model_probs = model.predict_proba(X)[0]
 
-            # Temperature scaling: applied before the market blend so the
-            # blend weight operates on properly-calibrated model output.
-            if abs(temperature - 1.0) > 1e-3:
-                eps = 1e-12
-                clipped = np.clip(model_probs, eps, 1.0)
-                scaled = np.exp(np.log(clipped) / temperature)
-                model_probs = scaled / scaled.sum()
+            # Post-calibration (Dirichlet preferred, temperature fallback)
+            # is applied before the market blend so the blend weight
+            # operates on properly-calibrated model output.
+            model_probs = _apply_post_calibration(model_probs, temperature, dirichlet_cal)
 
             if has_market:
                 blended = blend_w * model_probs + (1.0 - blend_w) * np.array(market_probs)
@@ -268,20 +283,38 @@ def predict_progol(match_ids, slate_meta=None):
 
     if results:
         probs_arr = np.array([[r['h'], r['d'], r['v']] for r in results])
-        top_n = quiniela.top_n_quinielas(probs_arr, n=10)
-        print("TOP-10 QUINIELAS MAS PROBABLES:")
+        # MC sampling instead of greedy top-N: greedy returns 10 quinielas
+        # that differ from the modal pick by 1-2 swaps; MC produces
+        # genuinely diverse alternates weighted by P(L,E,V).
+        top_n = quiniela.mc_sample_quinielas(probs_arr, n=10, n_samples=20000)
+        print("TOP-10 QUINIELAS (Monte Carlo):")
         print(quiniela.format_top_n(top_n))
         print()
 
-        budget_env = os.getenv('PROGOL_BUDGET')
-        if budget_env:
-            try:
-                budget = float(budget_env)
-                plan = quiniela.optimize_budget(probs_arr, budget=budget)
-                print(f"\nOptimizando con presupuesto = ${budget:.2f} MXN (base ${quiniela.BASE_COST_MXN}):")
-                print(quiniela.format_plan(plan))
-            except Exception as exc:
-                logger.warning(f"budget_optimization_failed: {exc}")
+        # Always compute a default budget plan so the Telegram bot has
+        # something concrete to show in place of the (now-removed)
+        # top-quinielas table. PROGOL_BUDGET env overrides the default.
+        budget = float(os.getenv('PROGOL_BUDGET', 300))
+        plan = None
+        try:
+            plan = quiniela.optimize_budget(probs_arr, budget=budget)
+            print(f"\nPlan optimizado con presupuesto = ${budget:.2f} MXN (base ${quiniela.BASE_COST_MXN}):")
+            print(quiniela.format_plan(plan))
+        except Exception as exc:
+            logger.warning(f"budget_optimization_failed: {exc}")
+
+        plan_dict = None
+        if plan is not None:
+            plan_dict = {
+                'budget': budget,
+                'cost': plan.cost,
+                'coverage_prob': plan.coverage_prob,
+                'n_tickets': plan.n_tickets,
+                'doubles': list(plan.doubles),
+                'triples': list(plan.triples),
+                'base_picks': list(plan.base_picks),
+                'matches_summary': plan.matches_summary,
+            }
 
         # Persist for downstream consumers (Telegram bot, dashboards).
         out = {
@@ -289,6 +322,7 @@ def predict_progol(match_ids, slate_meta=None):
             'predictions': [{'match': r['match'], 'L': r['h'], 'E': r['d'], 'V': r['v'],
                              'drift': r['drift']} for r in results],
             'top_quinielas': top_n,
+            'plan': plan_dict,
             'generated_at': datetime.now(timezone.utc).isoformat(),
             'model_version': model_version,
         }
@@ -307,6 +341,7 @@ def predict_progol(match_ids, slate_meta=None):
             model=model, feature_cols=feature_cols,
             model_version=model_version, temperature=temperature,
             feature_stats=feature_stats, days_ahead=7,
+            dirichlet_cal=dirichlet_cal,
         )
     except Exception as exc:
         logger.warning(f"upcoming_predict_pass_failed: {exc}")
