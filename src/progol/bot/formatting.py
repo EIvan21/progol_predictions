@@ -40,6 +40,7 @@ def _decode_probs(raw):
 
 TOSSUP_THRESHOLD = 0.05  # |P_top - P_2nd| < 5pp -> show both letters
 MATCH_NAME_WIDTH = 22    # truncate "HOME vs AWAY" to this many chars in tables
+JUEGA_WIDTH = 5          # widest possible value is "L/E/V" (triple)
 
 
 def _pick_label(probs):
@@ -72,6 +73,25 @@ def _short_match(home, away, width=MATCH_NAME_WIDTH):
     return f"{_trunc(home, half)}{sep}{_trunc(away, half)}"
 
 
+def _render_match_row(gn, home, away, probs, juega, mark=''):
+    """Single row of the per-match table. Width budget (~40 chars):
+        2 (#) + 2 + 22 (partido) + 2 + 2 (L) + 1 + 2 (E) + 1 + 2 (V) + 2 + 5 (JUEGA) = 41
+    Stays inside Telegram mobile <pre> width."""
+    mtch = _html_escape(_short_match((home or '?').upper(),
+                                     (away or '?').upper())).ljust(MATCH_NAME_WIDTH)
+    if probs is None:
+        return f"{gn:>2}  {mtch}   ·  ·  ·  {'—':<{JUEGA_WIDTH}}{mark}"
+    return (
+        f"{gn:>2}  {mtch}  "
+        f"{int(probs[0]*100):>2} {int(probs[1]*100):>2} {int(probs[2]*100):>2}  "
+        f"{juega:<{JUEGA_WIDTH}}{mark}"
+    )
+
+
+def _table_header():
+    return f"{'#':>2}  {'PARTIDO':<{MATCH_NAME_WIDTH}}  {'L':>2} {'E':>2} {'V':>2}  {'JUEGA':<{JUEGA_WIDTH}}"
+
+
 def format_concurso_message(concurso_number, games, latest=None,
                             model_version=None, generated_at=None):
     """HTML body for the weekly concurso. Renders a fixed-width per-match
@@ -96,41 +116,46 @@ def format_concurso_message(concurso_number, games, latest=None,
         head.append(f"<i>{' · '.join(meta_bits)}</i>")
     out = ["\n".join(head), ""]
 
-    # Split games into main + revancha so each gets its own table.
+    # If a budget plan is attached, use its per-match `played` lists for the
+    # JUEGA column (L / L/V / L/E/V) so the table directly reflects what the
+    # plan says to bet — no need to cross-reference "Triples: 7, 12" against
+    # the rows. Plan only covers main 14; revancha keeps the toss-up marker.
+    plan = (latest or {}).get('plan')
+    plan_played = {}
+    if plan:
+        for s in plan.get('matches_summary') or []:
+            plan_played[s['match_index']] = "/".join(s['played'])
+
     main = [g for g in games if g['game_number'] <= 14]
     rev = [g for g in games if g['game_number'] > 14]
 
-    def _render_table(rows):
-        # Header + data lines, all with consistent spacing for monospace.
-        lines = [f"{'#':>2}  {'PARTIDO':<{MATCH_NAME_WIDTH}}  {'L':>2} {'E':>2} {'V':>2}  {'PICK':<4}"]
+    def _render_table(rows, use_plan=True):
+        lines = [_table_header()]
         for g in rows:
             gn = g['game_number']
-            mtch = _short_match((g.get('home_name') or '?').upper(),
-                                (g.get('away_name') or '?').upper())
-            mtch = _html_escape(mtch).ljust(MATCH_NAME_WIDTH)
             probs = _decode_probs(g.get('predicted_probs'))
             if probs is None:
-                lines.append(f"{gn:>2}  {mtch}   ·  ·  ·   —")
+                lines.append(_render_match_row(gn, g.get('home_name'), g.get('away_name'), None, ''))
                 continue
-            pick, _idx = _pick_label(probs)
+            if use_plan and gn in plan_played:
+                juega = plan_played[gn]
+            else:
+                juega, _ = _pick_label(probs)
             actual = g.get('actual_label')
             mark = ''
             if actual is not None:
                 actual_letter = ['L', 'E', 'V'][actual]
-                mark = ' ✓' if pick.startswith(actual_letter) else f' ✗{actual_letter}'
-            lines.append(
-                f"{gn:>2}  {mtch}  "
-                f"{int(probs[0]*100):>2} {int(probs[1]*100):>2} {int(probs[2]*100):>2}  "
-                f"{pick:<4}{mark}"
-            )
+                mark = ' ✓' if actual_letter in juega.split('/') else f' ✗{actual_letter}'
+            lines.append(_render_match_row(gn, g.get('home_name'), g.get('away_name'),
+                                           probs, juega, mark=mark))
         return "<pre>" + "\n".join(lines) + "</pre>"
 
     if main:
-        out.append(_render_table(main))
+        out.append(_render_table(main, use_plan=True))
     if rev:
         out.append("")
         out.append("<b>— Revancha —</b>")
-        out.append(_render_table(rev))
+        out.append(_render_table(rev, use_plan=False))
 
     plan = (latest or {}).get('plan')
     if plan:
@@ -205,56 +230,49 @@ def format_upcoming_match_prediction(prediction):
 
 
 def format_budget_plan(concurso_number, plan, games=None, budget_input=None):
-    """HTML body for /presupuesto output. Header + summary table, then a
-    per-match line marking single/double/triple. `plan` is a
-    quiniela.BudgetPlan; `games` (optional) labels each match by team
-    names instead of just match index."""
+    """HTML body for /presupuesto output. Same compact per-match table as
+    format_concurso_message, with a header summary block on top so the
+    user gets cost / coverage / counts at a glance.
+
+    `plan` is a quiniela.BudgetPlan; `games` (optional) labels each match
+    by team names. The JUEGA column directly shows what the plan plays
+    per match (L, L/V, or L/E/V) — no need for a separate kind-tag column."""
     name_for = {}
     if games:
         for g in games:
-            name_for[g['game_number']] = _short_match(
-                (g.get('home_name') or '?').upper(),
-                (g.get('away_name') or '?').upper(),
-            )
+            name_for[g['game_number']] = (g.get('home_name'), g.get('away_name'))
 
     base_cost = (plan.cost / plan.n_tickets) if plan.n_tickets else 0
-    summary = []
+    summary_lines = []
     if budget_input is not None:
-        summary.append(f"Presupuesto:  ${budget_input:.0f} MXN")
-    summary.append(f"Costo:        ${plan.cost:.0f} ({plan.n_tickets} boletos · ${base_cost:.0f} c/u)")
-    summary.append(f"Cobertura:    {plan.coverage_prob*100:.4f}%")
-    summary.append(
+        summary_lines.append(f"Presupuesto: ${budget_input:.0f} MXN")
+    summary_lines.append(f"Costo:       ${plan.cost:.0f} ({plan.n_tickets} boletos · ${base_cost:.0f} c/u)")
+    summary_lines.append(f"Cobertura:   {plan.coverage_prob*100:.4f}%")
+    summary_lines.append(
         f"Triples ({len(plan.triples)}): "
         + (", ".join(str(m+1) for m in sorted(plan.triples)) or "—")
     )
-    summary.append(
+    summary_lines.append(
         f"Dobles  ({len(plan.doubles)}): "
         + (", ".join(str(m+1) for m in sorted(plan.doubles)) or "—")
     )
 
     out = [
         f"<b>💰 Plan optimizado — Progol {concurso_number}</b>",
-        "<pre>" + "\n".join(summary) + "</pre>",
+        "<pre>" + "\n".join(summary_lines) + "</pre>",
         "<i>Probabilidad de acertar los 14 con esta combinación</i>",
         "",
-        "<b>Por partido</b>",
     ]
 
-    # Per-match table: kind tag, idx, name, played outcomes, probs.
-    kind_tag = {'triple': 'T', 'double': 'D', 'single': ' '}
-    rows = [f"{'':1}  {'#':>2}  {'PARTIDO':<{MATCH_NAME_WIDTH}}  {'JUEGA':<7}  {'L':>2} {'E':>2} {'V':>2}"]
+    rows = [_table_header()]
     for s in plan.matches_summary:
         idx = s['match_index']
         played = "/".join(s['played'])
         p = s['probs']
-        nm = name_for.get(idx, '')
-        nm = _html_escape(nm).ljust(MATCH_NAME_WIDTH)
-        rows.append(
-            f"{kind_tag[s['kind']]:1}  {idx:>2}  {nm}  {played:<7}  "
-            f"{int(p['L']*100):>2} {int(p['E']*100):>2} {int(p['V']*100):>2}"
-        )
+        home, away = name_for.get(idx, ('?', '?'))
+        rows.append(_render_match_row(idx, home, away,
+                                      [p['L'], p['E'], p['V']], played))
     out.append("<pre>" + "\n".join(rows) + "</pre>")
-    out.append("<i>T = triple · D = doble · espacio = single pick</i>")
     return "\n".join(out)
 
 
