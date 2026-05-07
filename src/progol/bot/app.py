@@ -55,24 +55,24 @@ logger = logging.getLogger(__name__)
 
 
 HELP_TEXT = (
-    "*Progol Bot*\n\n"
-    "*Predicciones*\n"
-    "/ultima\\_prediccion\\_progol — última predicción guardada\n"
-    "/predecir\\_progol — predicción del concurso actual (sincroniza primero)\n"
-    "/predecir\\_partido EQUIPO\\_A vs EQUIPO\\_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
-    "\n*Análisis*\n"
+    "<b>🤖 Progol Bot</b>\n\n"
+    "<b>Predicciones</b>\n"
+    "/ultima_prediccion_progol — última predicción guardada\n"
+    "/predecir_progol — predicción del concurso actual (sincroniza primero)\n"
+    "/predecir_partido EQUIPO_A vs EQUIPO_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
+    "\n<b>Análisis</b>\n"
     "/presupuesto — plan óptimo de dobles/triples para tu presupuesto\n"
     "/cancelar — aborta una conversación en curso\n"
-    "\n*Cuenta*\n"
-    "/whoami — tu chat\\_id, rol y status\n"
+    "\n<b>Cuenta</b>\n"
+    "/whoami — tu chat_id, rol y status\n"
     "/help — esta ayuda"
 )
 
 ADMIN_HELP = (
-    "*Admin*\n"
+    "<b>Admin</b>\n"
     "/usuarios — lista de usuarios\n"
-    "/aprobar CHAT\\_ID \\[role\\] — aprueba (default user)\n"
-    "/bloquear CHAT\\_ID — bloquea\n"
+    "/aprobar CHAT_ID [role] — aprueba (default user)\n"
+    "/bloquear CHAT_ID — bloquea\n"
 )
 
 
@@ -158,12 +158,12 @@ def _guard(level='user'):
             if not database.bot_is_authorized(chat_id, allowed_roles=allowed):
                 msg = (
                     f"No estás autorizado para este comando.\n"
-                    f"Tu chat\\_id: `{chat_id}`\n"
+                    f"Tu chat_id: <code>{chat_id}</code>\n"
                     f"Pide acceso al owner."
                 )
                 if update.message:
                     try:
-                        await update.message.reply_text(msg, parse_mode='Markdown')
+                        await update.message.reply_text(msg, parse_mode='HTML')
                     except Exception:
                         pass
                 return
@@ -190,13 +190,13 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         text = HELP_TEXT
         if user['role'] in ('owner', 'admin'):
             text += "\n\n" + ADMIN_HELP
-        await update.message.reply_text(text, parse_mode='Markdown')
+        await update.message.reply_text(text, parse_mode='HTML')
         return
     await update.message.reply_text(
         f"Hola — tu solicitud quedó registrada.\n"
-        f"Tu chat\\_id: `{chat_id}`\n"
+        f"Tu chat_id: <code>{chat_id}</code>\n"
         f"El owner debe aprobarte para usar las predicciones.",
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
 
 
@@ -209,11 +209,11 @@ async def cmd_whoami(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     status = user['status'] if user else 'unknown'
     user_id = (user.get('user_id') if user else None) or (tg_user.id if tg_user else None)
     await update.message.reply_text(
-        f"chat\\_id: `{chat_id}`\n"
-        f"user\\_id: `{user_id}`\n"
-        f"role: `{role}`\n"
-        f"status: `{status}`",
-        parse_mode='Markdown',
+        f"chat_id: <code>{chat_id}</code>\n"
+        f"user_id: <code>{user_id}</code>\n"
+        f"role: <code>{role}</code>\n"
+        f"status: <code>{status}</code>",
+        parse_mode='HTML',
     )
 
 
@@ -225,7 +225,7 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     text = HELP_TEXT
     if user and user['role'] in ('owner', 'admin'):
         text += "\n\n" + ADMIN_HELP
-    await update.message.reply_text(text, parse_mode='Markdown')
+    await update.message.reply_text(text, parse_mode='HTML')
 
 
 async def cmd_ultima(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -235,7 +235,7 @@ async def cmd_ultima(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         format_concurso_message(concurso, games, latest=latest),
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
 
 
@@ -248,7 +248,7 @@ async def cmd_predecir_progol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     await update.message.reply_text(
         format_concurso_message(concurso, games, latest=latest),
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
 
 
@@ -256,16 +256,16 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     args_text = ' '.join(ctx.args) if ctx.args else ''
     if ' vs ' not in args_text.lower():
         await update.message.reply_text(
-            "Uso: `/predecir_partido EQUIPO_A vs EQUIPO_B`",
-            parse_mode='Markdown',
+            "Uso: <code>/predecir_partido EQUIPO_A vs EQUIPO_B</code>",
+            parse_mode='HTML',
         )
         return
     a_in, _, b_in = args_text.partition(' vs ')
     a_in, b_in = a_in.strip(), b_in.strip()
     if not a_in or not b_in:
         await update.message.reply_text(
-            "Uso: `/predecir_partido EQUIPO_A vs EQUIPO_B`",
-            parse_mode='Markdown',
+            "Uso: <code>/predecir_partido EQUIPO_A vs EQUIPO_B</code>",
+            parse_mode='HTML',
         )
         return
 
@@ -295,7 +295,7 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             if probs:
                 await update.message.reply_text(
                     format_match_prediction(concurso, best_game, probs),
-                    parse_mode='Markdown',
+                    parse_mode='HTML',
                 )
                 return
 
@@ -303,11 +303,12 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     a_id, a_score = database.resolve_team_id_by_name(a_in)
     b_id, b_score = database.resolve_team_id_by_name(b_in)
     if not a_id or not b_id:
+        from src.progol.bot.formatting import _html_escape
         await update.message.reply_text(
             f"No encontré los equipos en la base.\n"
-            f"`{a_in}` → score {a_score}\n"
-            f"`{b_in}` → score {b_score}",
-            parse_mode='Markdown',
+            f"<code>{_html_escape(a_in)}</code> → score {a_score}\n"
+            f"<code>{_html_escape(b_in)}</code> → score {b_score}",
+            parse_mode='HTML',
         )
         return
     pred = database.get_upcoming_match_prediction(a_id, b_id, days_ahead=7)
@@ -317,7 +318,7 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         )
         return
     await update.message.reply_text(
-        format_upcoming_match_prediction(pred), parse_mode='Markdown'
+        format_upcoming_match_prediction(pred), parse_mode='HTML'
     )
 
 
@@ -342,8 +343,7 @@ async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         if not p:
             await update.message.reply_text(
                 f"Faltan predicciones en el concurso {concurso} "
-                f"(juego {g['game_number']}). Corre /predecir\\_progol primero.",
-                parse_mode='Markdown',
+                f"(juego {g['game_number']}). Corre /predecir_progol primero."
             )
             return ConversationHandler.END
         probs_list.append(p)
@@ -357,10 +357,10 @@ async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['budget_probs'] = probs_list
     ctx.user_data['budget_games'] = main_games
     await update.message.reply_text(
-        f"*Concurso {concurso}* cargado.\n"
+        f"<b>Concurso {concurso}</b> cargado.\n"
         f"¿Cuál es tu presupuesto en MXN? (mínimo {int(BASE_COST_MXN)})\n"
         f"Manda /cancelar para abortar.",
-        parse_mode='Markdown',
+        parse_mode='HTML',
     )
     return AWAIT_BUDGET
 
@@ -396,7 +396,7 @@ async def receive_budget(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     probs_arr = np.array(probs_list)
     plan = optimize_budget(probs_arr, budget=budget)
     msg = format_budget_plan(concurso, plan, games=games, budget_input=budget)
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await update.message.reply_text(msg, parse_mode='HTML')
     for k in ('budget_probs', 'budget_games', 'budget_concurso'):
         ctx.user_data.pop(k, None)
     return ConversationHandler.END
@@ -414,14 +414,14 @@ async def cmd_cancelar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 async def cmd_usuarios(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     users = database.bot_list_users()
     await update.message.reply_text(
-        format_users_list(users), parse_mode='Markdown'
+        format_users_list(users), parse_mode='HTML'
     )
 
 
 async def cmd_aprobar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text(
-            "Uso: `/aprobar CHAT_ID [role]`", parse_mode='Markdown'
+            "Uso: <code>/aprobar CHAT_ID [role]</code>", parse_mode='HTML'
         )
         return
     try:
@@ -435,15 +435,15 @@ async def cmd_aprobar(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     n = database.bot_set_role(target, role=role, status='active')
     await update.message.reply_text(
-        f"chat\\_id `{target}` -> `{role}`/active ({n} cambio).",
-        parse_mode='Markdown',
+        f"chat_id <code>{target}</code> → <code>{role}</code>/active ({n} cambio).",
+        parse_mode='HTML',
     )
 
 
 async def cmd_bloquear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not ctx.args:
         await update.message.reply_text(
-            "Uso: `/bloquear CHAT_ID`", parse_mode='Markdown'
+            "Uso: <code>/bloquear CHAT_ID</code>", parse_mode='HTML'
         )
         return
     try:
@@ -453,8 +453,8 @@ async def cmd_bloquear(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         return
     n = database.bot_set_role(target, role='blocked', status='blocked')
     await update.message.reply_text(
-        f"chat\\_id `{target}` bloqueado ({n} cambio).",
-        parse_mode='Markdown',
+        f"chat_id <code>{target}</code> bloqueado ({n} cambio).",
+        parse_mode='HTML',
     )
 
 

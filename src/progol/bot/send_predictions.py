@@ -52,7 +52,7 @@ def send():
     text = format_concurso_message(concurso, games, latest=latest)
     res = requests.post(
         TELEGRAM_API.format(token=token),
-        json={'chat_id': chat_id, 'text': text, 'parse_mode': 'Markdown'},
+        json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'},
         timeout=15,
     )
     if not res.ok:
