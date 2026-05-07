@@ -221,7 +221,9 @@ def format_budget_plan(concurso_number, plan, games=None, budget_input=None):
         "",
         "*Por partido:*",
     ]
-    kind_tag = {'triple': '*\\[T\\]*', 'double': '*\\[D\\]*', 'single': '\\[ \\]'}
+    # Legacy Markdown does not allow `[` inside bold (it tries to start a
+    # link). Plain letters/parens parse cleanly.
+    kind_tag = {'triple': '*(T)*', 'double': '*(D)*', 'single': '   '}
     for s in plan.matches_summary:
         idx = s['match_index']
         played = "/".join(s['played'])

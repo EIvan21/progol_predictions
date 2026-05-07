@@ -286,7 +286,7 @@ def predict_progol(match_ids, slate_meta=None):
         # MC sampling instead of greedy top-N: greedy returns 10 quinielas
         # that differ from the modal pick by 1-2 swaps; MC produces
         # genuinely diverse alternates weighted by P(L,E,V).
-        top_n = quiniela.mc_sample_quinielas(probs_arr, n=10, n_samples=20000)
+        top_n = quiniela.mc_sample_quinielas(probs_arr, n=10)
         print("TOP-10 QUINIELAS (Monte Carlo):")
         print(quiniela.format_top_n(top_n))
         print()
