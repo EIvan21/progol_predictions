@@ -5,3 +5,6 @@ thefuzz==0.22.1
 rapidfuzz==3.10.1
 python-dotenv==1.0.1
 python-telegram-bot==20.7
+# quiniela.optimize_budget is the only ML-adjacent piece the bot loads —
+# it needs numpy but not pandas/sklearn. Adds ~25MB to the venv.
+numpy==1.26.4
