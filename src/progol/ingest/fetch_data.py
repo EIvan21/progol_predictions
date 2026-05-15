@@ -22,7 +22,8 @@ else:
     LEAGUES = {
         "Liga MX": 262, "Premier League": 39, "La Liga": 140, "Serie A": 135, "Bundesliga": 78,
         "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
-        "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263
+        "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263,
+        "Russian Premier League": 235,
     }
     SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
