@@ -111,8 +111,10 @@ def get_upcoming_api_fixtures(days_back=2, days_forward=5):
     # Liga MX, Premier, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Brasil, Argentina,
     # Portugal, Eredivisie, Belgium, Championship, La Liga 2, Libertadores, UCL, UEL,
     # Greek Super League, Bundesliga 2, Liga MX Expansion, Scottish Premiership,
-    # Russian Premier League
-    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3, 197, 79, 263, 179, 235]
+    # Russian Premier League, Sudamericana, FA Cup, EFL Cup, Coupe de France,
+    # DFB-Pokal, Coppa Italia, Copa del Rey.
+    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3, 197, 79, 263, 179, 235,
+               11, 45, 48, 66, 81, 137, 143]
     all_f = []
     for lid in leagues:
         for sn in [2025, 2026]:

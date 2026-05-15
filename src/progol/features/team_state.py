@@ -8,6 +8,7 @@ strictly before that date, then compute the EWMA / Elo / form features.
 import pandas as pd
 import sqlite3
 
+from src.progol import config
 from src.progol.features.elo import update_pair, BASE_RATING
 from src.progol.features.rolling import EWMA_SPAN
 
@@ -212,6 +213,7 @@ def build_inference_row(
         'rest_diff': rest_h - rest_a,
         'total_goals_avg': (h_block['total_goals_ewma'] + a_block['total_goals_ewma']) / 2.0,
         'draw_rate_avg': (h_block['drew_ewma'] + a_block['drew_ewma']) / 2.0,
+        'is_cup': 1 if int(league_id) in config.CUP_LEAGUE_IDS else 0,
         'prob_market_h': market_probs[0],
         'prob_market_d': market_probs[1],
         'prob_market_a': market_probs[2],

@@ -26,12 +26,18 @@ else:
         "Russian Premier League": 235,
         # Domestic leagues that appear in Progol slates but were previously
         # unmodelled — matches in these leagues fell back to drift=True at
-        # inference. Cup competitions (Libertadores/UCL/UEL) intentionally
-        # NOT included: those games carry different stakes/lineups vs domestic
-        # league play and would noise the model. Cup matches still resolve at
-        # inference because the teams have domestic-league training data.
+        # inference.
         "Belgium Jupiler": 144, "La Liga 2": 141, "Greek Super League": 197,
         "Bundesliga 2": 79, "Scottish Premiership": 179,
+        # Cup competitions. Each match is flagged via the `is_cup` feature
+        # (config.CUP_LEAGUE_IDS) so the model can learn cup-specific
+        # patterns (knock-out pressure, mixed-tier opponents, lineup
+        # rotation) while still sharing league-side history per club.
+        "UEFA Champions League": 2, "UEFA Europa League": 3,
+        "Copa Libertadores": 13, "Copa Sudamericana": 11,
+        "FA Cup": 45, "EFL Cup": 48,
+        "Copa del Rey": 143, "DFB-Pokal": 81,
+        "Coppa Italia": 137, "Coupe de France": 66,
     }
     SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 

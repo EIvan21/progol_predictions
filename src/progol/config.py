@@ -29,6 +29,23 @@ LATEST_POINTER_PATH = MODEL_DIR / "latest.json"
 PROGOL_IDS_PATH = DATA_DIR / "current_progol_ids.json"
 
 CAT_COLS = ['venue', 'referee', 'league_id']
+# API-Football league IDs that are knock-out cup competitions rather than
+# regular league play. Used to derive the `is_cup` feature, which lets the
+# model share signal across cup competitions (knock-out pressure, mixed-tier
+# opponents, lineup rotation) instead of treating each cup as an isolated
+# slice via league_id alone.
+CUP_LEAGUE_IDS = {
+    2,    # UEFA Champions League
+    3,    # UEFA Europa League
+    11,   # CONMEBOL Sudamericana
+    13,   # CONMEBOL Libertadores
+    45,   # FA Cup (England)
+    48,   # EFL Cup / Carabao Cup (England)
+    66,   # Coupe de France
+    81,   # DFB-Pokal (Germany)
+    137,  # Coppa Italia
+    143,  # Copa del Rey (Spain)
+}
 # Market probs are NOT trained as features: only ~22 of 33k historical rows have
 # odds, so they'd be effectively constant. They're applied as an inference-time
 # blend instead — see predict.py + MODEL_MARKET_BLEND.
@@ -39,6 +56,8 @@ FEATURE_COLS = [
     # Draw-prone (averages, not diffs) — pushes E when both teams trend toward
     # low-scoring or frequent draws.
     'total_goals_avg', 'draw_rate_avg',
+    # Knock-out cup flag — see CUP_LEAGUE_IDS above.
+    'is_cup',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
 
