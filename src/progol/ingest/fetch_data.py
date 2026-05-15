@@ -24,6 +24,14 @@ else:
         "Ligue 1": 61, "MLS": 253, "Brazil Serie A": 71, "Argentina": 128, "Portugal": 94,
         "Championship": 40, "Eredivisie": 88, "Liga MX Expansion": 263,
         "Russian Premier League": 235,
+        # Domestic leagues that appear in Progol slates but were previously
+        # unmodelled — matches in these leagues fell back to drift=True at
+        # inference. Cup competitions (Libertadores/UCL/UEL) intentionally
+        # NOT included: those games carry different stakes/lineups vs domestic
+        # league play and would noise the model. Cup matches still resolve at
+        # inference because the teams have domestic-league training data.
+        "Belgium Jupiler": 144, "La Liga 2": 141, "Greek Super League": 197,
+        "Bundesliga 2": 79, "Scottish Premiership": 179,
     }
     SEASONS = [2019, 2020, 2021, 2022, 2023, 2024, 2025, 2026]
 
