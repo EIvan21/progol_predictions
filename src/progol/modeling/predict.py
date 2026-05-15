@@ -161,7 +161,13 @@ def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
     return written
 
 
-def predict_progol(match_ids, slate_meta=None):
+def predict_progol(match_ids, slate_meta=None, game_numbers=None):
+    """`game_numbers` (optional) is a list parallel to `match_ids` carrying
+    each fixture's original Progol slot (1..21). When some scraped matches
+    fail to resolve, the resolved set has gaps in slot numbers; without
+    this mapping the i-th prediction silently lands at concurso row=i,
+    pairing the right L/E/V with the wrong team labels. If omitted we fall
+    back to 1..N to preserve the old behavior."""
     configure_logging()
     _init_predictions_db()
 
@@ -196,7 +202,14 @@ def predict_progol(match_ids, slate_meta=None):
     if concurso_number:
         print(f"Concurso: {concurso_number}")
 
-    for game_idx, mid in enumerate(match_ids, start=1):
+    # Align each fixture to its ORIGINAL Progol slot (1..21). If the caller
+    # didn't pass game_numbers (older slate JSON), fall back to enumeration.
+    if game_numbers and len(game_numbers) == len(match_ids):
+        slot_pairs = list(zip(game_numbers, match_ids))
+    else:
+        slot_pairs = list(enumerate(match_ids, start=1))
+
+    for game_idx, mid in slot_pairs:
         try:
             res = session.get(f"{API_BASE}/fixtures?id={mid}", timeout=20).json()
             if not res.get('response'):
@@ -255,7 +268,8 @@ def predict_progol(match_ids, slate_meta=None):
 
             results.append({'match': f"{h_name} vs {a_name}",
                             'h': probs[0], 'd': probs[1], 'v': probs[2],
-                            'drift': bool(drift_flags)})
+                            'drift': bool(drift_flags),
+                            'gn': int(game_idx)})
             logger.info("prediction_ok", extra={'fixture_id': mid, 'label': label})
         except Exception as e:
             logger.error("prediction_failed", extra={'fixture_id': mid, 'err': str(e)})
@@ -282,7 +296,16 @@ def predict_progol(match_ids, slate_meta=None):
     print("=" * 105 + "\n")
 
     if results:
-        probs_arr = np.array([[r['h'], r['d'], r['v']] for r in results])
+        # Index probs by ORIGINAL slot so the plan / top quinielas line up
+        # with concurso game_numbers 1..14, not the resolved-list position.
+        # Unresolved main-slate slots get a neutral 1X2 prior so the budget
+        # optimizer still considers all 14 positions (those slots will tend
+        # to surface as triples since their distribution is flat-ish).
+        probs_by_slot = {r['gn']: [r['h'], r['d'], r['v']] for r in results}
+        DEFAULT_PRIOR = [0.45, 0.25, 0.30]
+        main_probs = [probs_by_slot.get(s, DEFAULT_PRIOR) for s in range(1, 15)]
+        probs_arr = np.array(main_probs)
+
         # MC sampling instead of greedy top-N: greedy returns 10 quinielas
         # that differ from the modal pick by 1-2 swaps; MC produces
         # genuinely diverse alternates weighted by P(L,E,V).
@@ -374,4 +397,8 @@ if __name__ == "__main__":
     else:
         with open(slate_path, 'r') as f:
             slate_meta = json.load(f)
-        predict_progol(slate_meta.get('match_ids', []), slate_meta=slate_meta)
+        predict_progol(
+            slate_meta.get('match_ids', []),
+            slate_meta=slate_meta,
+            game_numbers=slate_meta.get('game_numbers'),
+        )

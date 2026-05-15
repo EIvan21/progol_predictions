@@ -183,10 +183,17 @@ if __name__ == "__main__":
 
     api_data = get_upcoming_api_fixtures()
     games = resolve_matches(slate, api_data)
-    resolved_ids = [g['fixture_id'] for g in games if g['fixture_id'] is not None]
+    resolved = [(g['game_number'], g['fixture_id']) for g in games if g['fixture_id'] is not None]
+    resolved_ids = [fid for _, fid in resolved]
+    resolved_game_numbers = [gn for gn, _ in resolved]
     concurso_number = parse_concurso_number(post_url)
 
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # `game_numbers` mirrors `match_ids` 1:1 and carries the original
+    # 1..21 Progol slot for each fixture. predict.py needs it to write
+    # predicted_probs to the right concurso row when some slate entries
+    # fail to resolve — otherwise the i-th resolved prediction lands at
+    # DB game_number=i, misaligning labels for any unresolved game before it.
     payload = {
         "last_updated": datetime.now().strftime("%Y-%m-%d"),
         "source_url": post_url,
@@ -194,6 +201,7 @@ if __name__ == "__main__":
         "expected": EXPECTED_SLATE_SIZE,
         "resolved": len(resolved_ids),
         "match_ids": resolved_ids,
+        "game_numbers": resolved_game_numbers,
     }
     with open(CACHE_FILE, 'w') as f:
         json.dump(payload, f, indent=2)
