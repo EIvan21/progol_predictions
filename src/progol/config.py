@@ -69,6 +69,63 @@ FEATURE_COLS = [
     'injuries_diff',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
+# Per-league override of the model/market blend weight (model weight; market
+# weight is 1-blend). Sharper markets => trust market more (lower blend); thin
+# / opaque markets => trust model more (higher blend). Default 0.60 applies to
+# leagues NOT listed here.
+#   - Top-5 European leagues: very sharp lines from Pinnacle/Bet365; the
+#     market beats most public models. Drop model weight to 0.50-0.55.
+#   - Liga MX / Liga MX Expansion: less liquid; model gets more weight.
+#   - Russian Premier League: opaque post-2022 sanctions; trust model.
+#   - Cup competitions: lineups uncertain, market less informed => model.
+MODEL_MARKET_BLEND_BY_LEAGUE = {
+    # Top-5 European domestic leagues — sharp markets, less model weight.
+    39:  0.50,  # Premier League
+    140: 0.50,  # La Liga
+    78:  0.50,  # Bundesliga
+    135: 0.50,  # Serie A
+    61:  0.50,  # Ligue 1
+    # Second tier European — moderately sharp.
+    40:  0.60,  # Championship
+    79:  0.60,  # Bundesliga 2
+    141: 0.60,  # La Liga 2
+    # MLS / South America — medium liquidity, slightly more model weight.
+    253: 0.65,  # MLS
+    71:  0.65,  # Brazil Serie A
+    128: 0.65,  # Argentina
+    # Smaller domestic leagues — less efficient markets.
+    94:  0.70,  # Portugal
+    88:  0.70,  # Eredivisie
+    144: 0.70,  # Belgium
+    179: 0.70,  # Scottish Premiership
+    197: 0.70,  # Greek Super League
+    # Mexican leagues — model has data advantage given the Liga MX focus.
+    262: 0.75,  # Liga MX
+    263: 0.85,  # Liga MX Expansion (thin lines)
+    # Russian PL — opaque post-sanctions, trust model.
+    235: 0.85,  # Russian Premier League
+    # Cups — lineups rotate, market is less informed than for league play.
+    2:   0.65,  # UEFA Champions League
+    3:   0.65,  # UEFA Europa League
+    11:  0.75,  # Copa Sudamericana
+    13:  0.70,  # Copa Libertadores
+    45:  0.70,  # FA Cup
+    48:  0.75,  # EFL Cup
+    66:  0.75,  # Coupe de France
+    81:  0.70,  # DFB-Pokal
+    137: 0.70,  # Coppa Italia
+    143: 0.70,  # Copa del Rey
+}
+
+
+def market_blend_for(league_id) -> float:
+    """Return the model-weight to use when blending model probs with
+    bookmaker market probs for fixtures in `league_id`. Falls back to
+    MODEL_MARKET_BLEND_DEFAULT for any league not in the override map."""
+    try:
+        return MODEL_MARKET_BLEND_BY_LEAGUE.get(int(league_id), MODEL_MARKET_BLEND_DEFAULT)
+    except (TypeError, ValueError):
+        return MODEL_MARKET_BLEND_DEFAULT
 
 
 def get_data_limit(total_count):

@@ -215,15 +215,23 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
     conn = database.get_connection()
     results = []
 
-    blend_w = float(os.getenv('MODEL_MARKET_BLEND', config.MODEL_MARKET_BLEND_DEFAULT))
-    blend_w = min(max(blend_w, 0.0), 1.0)
+    # Optional global override (env) — if set, applies to ALL matches and
+    # bypasses the per-league map. Useful for ablation testing ("how does
+    # the model do if I trust the market 100%?"). When unset (the normal
+    # production path), each fixture's blend is looked up by league via
+    # config.market_blend_for() inside the per-fixture loop below.
+    blend_override = os.getenv('MODEL_MARKET_BLEND')
+    blend_w_global = (min(max(float(blend_override), 0.0), 1.0)
+                      if blend_override is not None else None)
 
     # The slate file's concurso_number lets us link each prediction back to the
     # progol_concurso_games row; game_number is the 1-indexed position in match_ids.
     concurso_number = slate_meta.get('concurso_number') if slate_meta else None
 
     cal_label = pkg.get('calibration', 'temperature' if abs(temperature - 1.0) > 1e-3 else 'none')
-    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (cal={cal_label}, T={temperature:.3f}, blend={blend_w:.2f})")
+    blend_desc = (f"{blend_w_global:.2f} (override)" if blend_w_global is not None
+                  else "per-league")
+    print(f"\nAnalyzing Progol slate ({len(match_ids)} matches) — model {model_version} (cal={cal_label}, T={temperature:.3f}, blend={blend_desc})")
     if concurso_number:
         print(f"Concurso: {concurso_number}")
 
@@ -272,6 +280,10 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
             model_probs = _apply_post_calibration(model_probs, temperature, dirichlet_cal)
 
             if has_market:
+                # Per-league blend weight (Batch D). Falls back to default
+                # if the league isn't in the override map.
+                blend_w = (blend_w_global if blend_w_global is not None
+                           else config.market_blend_for(league_id))
                 blended = blend_w * model_probs + (1.0 - blend_w) * np.array(market_probs)
                 probs = blended / blended.sum()
             else:

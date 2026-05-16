@@ -18,6 +18,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize_scalar
 from src.progol import config
+from src.progol.modeling.metrics import expected_calibration_error, per_league_breakdown
 from src.progol.utils import drift
 from src.progol.utils.logging_setup import configure as configure_logging
 from src.progol.storage import gcs, versioning
@@ -64,7 +65,7 @@ def apply_temperature(y_prob, T, eps=1e-12):
     return scaled / scaled.sum(axis=1, keepdims=True)
 
 
-def fit_dirichlet(y_prob, y_true, eps=1e-9):
+def fit_dirichlet(y_prob, y_true, sample_weight=None, eps=1e-9):
     """Dirichlet (matrix) calibration on the holdout set.
 
     Treats log(y_prob) as a 3-d feature vector and fits a multinomial
@@ -72,6 +73,12 @@ def fit_dirichlet(y_prob, y_true, eps=1e-9):
     is the full Dirichlet calibrator (Kull et al. 2019); it can fix
     per-class miscalibration that a single scalar temperature cannot,
     e.g. systematic under-prediction of the draw class.
+
+    `sample_weight` (optional) lets the calibrator weight recent rows
+    higher — useful because miscalibration drifts over time (rule
+    changes, VAR introduction, market evolution). A 1-year half-life
+    on the holdout typically tightens the fit by another 1-3 bps over
+    uniform weighting.
 
     Returns the fitted LogisticRegression. Use `apply_dirichlet` to
     transform raw probs at inference."""
@@ -85,7 +92,7 @@ def fit_dirichlet(y_prob, y_true, eps=1e-9):
     # multi_class kwarg now warns. C=1e4 is near-unregularized (full
     # Dirichlet matrix scaling). lbfgs handles multinomial natively.
     lr = LogisticRegression(max_iter=1000, C=1e4, solver='lbfgs')
-    lr.fit(log_probs, y_true)
+    lr.fit(log_probs, y_true, sample_weight=sample_weight)
     # Reorder columns of coef/proba to match [0, 1, 2] in case classes_ differs.
     if not np.array_equal(lr.classes_, np.array([0, 1, 2])):
         return None
@@ -222,7 +229,16 @@ def train_heavy_model():
     # predicts even after isotonic calibration on each base estimator.
     # If Dirichlet fails to improve log-loss vs raw, fall back to scalar
     # temperature (older behavior); if both fail, identity.
-    dirichlet_cal = fit_dirichlet(y_prob, y_test.values)
+    #
+    # Time-weight the calibration fit (Batch D): miscalibration drifts —
+    # VAR introduction, betting market sharpening, post-pandemic scoring
+    # rates all shifted the conditional P(class | predicted_prob). Bias
+    # the calibrator toward recent holdout rows so it learns the CURRENT
+    # miscalibration pattern, not the average over 2019-2026.
+    cal_dates = pd.to_datetime(test_holdout['date'])
+    cal_ref = cal_dates.max()
+    cal_sw = np.exp(-((cal_ref - cal_dates).dt.days) / HALF_LIFE_DAYS).values
+    dirichlet_cal = fit_dirichlet(y_prob, y_test.values, sample_weight=cal_sw)
     loss_dir = float('inf')
     brier_dir = float('inf')
     y_prob_dir = None
@@ -257,10 +273,29 @@ def train_heavy_model():
     proxy_pipe.fit(X_train, y_train)
     feat_imp = {f: float(i) for f, i in zip(feature_cols, proxy_pipe.named_steps['clf'].feature_importances_)}
 
+    # ECE on the CALIBRATED probs (what production actually serves). Pre-
+    # calibration ECE is logged separately so we can see how much Dirichlet
+    # bought us in calibration terms (not just log-loss).
+    y_prob_final = (apply_dirichlet(y_prob, dirichlet_cal) if dirichlet_cal is not None
+                    else apply_temperature(y_prob, T_opt))
+    ece_raw = expected_calibration_error(y_test.values, y_prob)
+    ece_calibrated = expected_calibration_error(y_test.values, y_prob_final)
+    logger.info(f"ECE: {ece_raw:.4f} (raw) -> {ece_calibrated:.4f} (calibrated)")
+
+    # Per-league diagnostics on calibrated probs. Surfaces which leagues
+    # drag the global Brier down — typical pattern: cup competitions and
+    # newly-added leagues with sparse training history score worse.
+    per_league = per_league_breakdown(
+        test_holdout['league_id'].values, y_test.values, y_prob_final,
+    )
+
     metrics = {
         "accuracy": acc, "log_loss": loss, "brier_score": brier,
         "log_loss_calibrated": loss_T,
         "brier_score_calibrated": brier_T,
+        "ece": ece_raw,
+        "ece_calibrated": ece_calibrated,
+        "per_league": per_league,
         "temperature": T_opt,
         "calibration": active_calibration,
         "classification_report": report, "feature_importance": feat_imp,
