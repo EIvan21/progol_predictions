@@ -60,6 +60,20 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_date ON matches(date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_home ON matches(home_id, date)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_away ON matches(away_id, date)")
+    # Idempotent column additions for Batch A features. SQLite lacks
+    # `ALTER TABLE ADD COLUMN IF NOT EXISTS`, so probe via PRAGMA first.
+    # `xg_is_real`: 1 when home_xg/away_xg came from API-Football's
+    # expected_goals stat, 0 when from the legacy shot-based proxy.
+    # `home_injuries`/`away_injuries`: count of unavailable players per side
+    # at fixture time (API /injuries endpoint). 0 when API has no data.
+    existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(matches)").fetchall()}
+    for col, ddl in [
+        ('xg_is_real', "ALTER TABLE matches ADD COLUMN xg_is_real INTEGER DEFAULT 0"),
+        ('home_injuries', "ALTER TABLE matches ADD COLUMN home_injuries INTEGER DEFAULT 0"),
+        ('away_injuries', "ALTER TABLE matches ADD COLUMN away_injuries INTEGER DEFAULT 0"),
+    ]:
+        if col not in existing_cols:
+            cursor.execute(ddl)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS teams (
             team_id INTEGER PRIMARY KEY,
@@ -234,21 +248,23 @@ def update_alpha_stats(fixture_id, data):
         home_shots = ?, away_shots = ?, home_possession = ?, away_possession = ?,
         home_corners = ?, away_corners = ?,
         odds_home = ?, odds_draw = ?, odds_away = ?,
-        home_xg = ?, away_xg = ?,
+        home_xg = ?, away_xg = ?, xg_is_real = ?,
         home_rank = ?, away_rank = ?,
         home_form = ?, away_form = ?,
         venue_id = ?, venue_surface = ?,
-        h2h_home_wins = ?, h2h_draws = ?, h2h_away_wins = ?
+        h2h_home_wins = ?, h2h_draws = ?, h2h_away_wins = ?,
+        home_injuries = ?, away_injuries = ?
         WHERE fixture_id = ?
     ''', (
         data.get('h_sh'), data.get('a_sh'), data.get('h_po'), data.get('a_po'),
         data.get('h_co'), data.get('a_co'),
         data.get('o_h'), data.get('o_d'), data.get('o_a'),
-        data.get('h_xg'), data.get('a_xg'),
+        data.get('h_xg'), data.get('a_xg'), int(bool(data.get('xg_real', False))),
         data.get('h_rank'), data.get('a_rank'),
         data.get('h_form'), data.get('a_form'),
         data.get('v_id'), data.get('v_surf'),
         data.get('h2h_h'), data.get('h2h_d'), data.get('h2h_a'),
+        data.get('h_inj', 0), data.get('a_inj', 0),
         fixture_id,
     ))
     conn.commit()

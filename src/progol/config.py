@@ -58,6 +58,10 @@ FEATURE_COLS = [
     'total_goals_avg', 'draw_rate_avg',
     # Knock-out cup flag — see CUP_LEAGUE_IDS above.
     'is_cup',
+    # Injuries diff at fixture time (home - away). Filled by fetch_data
+    # from API /injuries; 0 when API has no data for that date. Captures
+    # "team is missing 3 starters" type signal that EWMA features can't.
+    'injuries_diff',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
 

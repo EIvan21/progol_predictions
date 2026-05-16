@@ -92,6 +92,8 @@ def calculate_alpha_features(df):
 
     df['is_cup'] = df['league_id'].isin(config.CUP_LEAGUE_IDS).astype(int)
 
+    df['injuries_diff'] = df['home_injuries'].fillna(0) - df['away_injuries'].fillna(0)
+
     df['target'] = df.apply(get_target, axis=1)
 
     final_cols = ['fixture_id', 'date', 'target'] + config.CAT_COLS + config.FEATURE_COLS

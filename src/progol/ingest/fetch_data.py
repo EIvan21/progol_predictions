@@ -92,6 +92,18 @@ def get_venue_surface(team_id):
     except: pass
     return (0, "Unknown")
 
+def _safe_float(v):
+    """API-Football returns numeric stats as either strings or numbers; the
+    expected_goals field in particular comes as 'None'/None/'1.20'/1.2.
+    Returns float or None — None means caller should fall back."""
+    if v is None or v == 'None':
+        return None
+    try:
+        return float(str(v).replace('%', ''))
+    except (TypeError, ValueError):
+        return None
+
+
 def fetch_alpha_details(fid):
     try:
         # 1. Get Match Teams & IDs first
@@ -103,6 +115,7 @@ def fetch_alpha_details(fid):
         # 2. Statistics & Odds
         s_res = SESSION.get(f"{BASE_URL}/fixtures/statistics?fixture={fid}", timeout=30).json().get('response', [])
         stats = {}
+        stats['xg_real'] = False  # default — flipped below if API provides actual xG
         if s_res:
             for i, ts in enumerate(s_res):
                 p = 'h' if i == 0 else 'a'
@@ -111,7 +124,17 @@ def fetch_alpha_details(fid):
                 stats[f'{p}_po'] = int(str(s_map.get('Ball Possession', "0") or "0").replace('%',''))
                 stats[f'{p}_co'] = int(s_map.get('Corner Kicks', 0) or 0)
                 total_sh = int(s_map.get('Total Shots', 0) or 0)
-                stats[f'{p}_xg'] = (stats[f'{p}_sh'] * 0.3) + (total_sh * 0.1)
+                # API-Football publishes real `expected_goals` for top-5
+                # leagues from 2017+. Prefer it; fall back to the legacy
+                # proxy `0.3*shots_on_goal + 0.1*total_shots` so the column
+                # is never NULL. xg_real flag lets downstream code weight
+                # rows by data quality if useful.
+                real_xg = _safe_float(s_map.get('expected_goals'))
+                if real_xg is not None:
+                    stats[f'{p}_xg'] = real_xg
+                    stats['xg_real'] = True
+                else:
+                    stats[f'{p}_xg'] = (stats[f'{p}_sh'] * 0.3) + (total_sh * 0.1)
 
         o_res = SESSION.get(f"{BASE_URL}/odds?fixture={fid}&bookmaker=8", timeout=30).json().get('response', [])
         if o_res and o_res[0].get('bookmakers'):
@@ -119,6 +142,23 @@ def fetch_alpha_details(fid):
             stats['o_h'], stats['o_d'], stats['o_a'] = float(bets[0]['odd']), float(bets[1]['odd']), float(bets[2]['odd'])
         else:
             stats['o_h'], stats['o_d'], stats['o_a'] = 0.0, 0.0, 0.0
+
+        # Injuries — players unavailable at fixture time. API-Football's
+        # /injuries endpoint returns each item with team.id, so we split
+        # by home/away. For old fixtures the API often returns empty —
+        # treated as 0 injuries (best-effort: no data ≠ no injuries, but
+        # we can't distinguish, and 0 is the safer default than NULL).
+        stats['h_inj'], stats['a_inj'] = 0, 0
+        try:
+            inj_res = SESSION.get(f"{BASE_URL}/injuries?fixture={fid}", timeout=30).json().get('response', [])
+            for item in inj_res:
+                tid = (item.get('team') or {}).get('id')
+                if tid == h_id:
+                    stats['h_inj'] += 1
+                elif tid == a_id:
+                    stats['a_inj'] += 1
+        except Exception:
+            pass
 
         # 3. New Strategic Context (Rankings, Form, H2H, Venue)
         std = get_standings(lid, season)

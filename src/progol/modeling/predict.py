@@ -23,6 +23,25 @@ logger = logging.getLogger(__name__)
 API_BASE = "https://v3.football.api-sports.io"
 
 
+def _injuries_from_api(fixture_id: int, home_id: int, away_id: int, session):
+    """Pull current /injuries for the fixture and split by side. Returns
+    (h_inj, a_inj). Best-effort: any failure -> (0, 0) so the feature
+    stays defined. For training rows this same logic ran in fetch_data
+    so train/inference symmetry is preserved (0 on API miss, not None)."""
+    try:
+        res = session.get(f"{API_BASE}/injuries?fixture={fixture_id}", timeout=15).json().get('response', [])
+        h, a = 0, 0
+        for item in res:
+            tid = (item.get('team') or {}).get('id')
+            if tid == home_id:
+                h += 1
+            elif tid == away_id:
+                a += 1
+        return h, a
+    except Exception:
+        return 0, 0
+
+
 def _market_probs_from_api(fixture_id: int, session):
     """Returns (probs, has_market). probs sums to 1.0 — devigged from bookmaker
     overround. has_market=False means the API returned nothing and probs is the
@@ -111,6 +130,10 @@ def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
 
     database.cleanup_old_match_predictions(stale_after_days=1)
 
+    # Need a session for the /injuries call below — kept here (not at module
+    # scope) so unit tests can monkeypatch without a network reach.
+    session = api_football_session()
+
     conn = database.get_connection()
     rows = conn.execute("""
         SELECT m.fixture_id, m.league_id, m.date, m.home_id, m.away_id,
@@ -126,12 +149,14 @@ def predict_upcoming_fixtures(model, feature_cols, model_version, temperature,
     written = failed = 0
     for fid, league_id, date, h_id, a_id, venue, referee, h_name, a_name in rows:
         try:
+            h_inj, a_inj = _injuries_from_api(fid, h_id, a_id, session)
             row = build_inference_row(
                 conn, home_id=h_id, away_id=a_id,
                 league_id=league_id, date=date,
                 venue=venue or "Unknown",
                 referee=referee or "Unknown",
                 market_probs=(0.45, 0.25, 0.30),
+                home_injuries=h_inj, away_injuries=a_inj,
             )
             X = pd.DataFrame([row])[feature_cols]
             model_probs = model.predict_proba(X)[0]
@@ -225,11 +250,13 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
             referee = m['fixture'].get('referee') or "Unknown"
 
             market_probs, has_market = _market_probs_from_api(mid, session)
+            h_inj, a_inj = _injuries_from_api(mid, h_id, a_id, session)
 
             row = build_inference_row(
                 conn, home_id=h_id, away_id=a_id,
                 league_id=league_id, date=kickoff,
                 venue=venue, referee=referee, market_probs=market_probs,
+                home_injuries=h_inj, away_injuries=a_inj,
             )
 
             drift_flags = drift.check_row(row, feature_stats, z_threshold=4.0)

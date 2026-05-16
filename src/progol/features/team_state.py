@@ -174,6 +174,8 @@ def build_inference_row(
     referee: str = "Unknown",
     venue_surface: str = "grass",
     market_probs=None,
+    home_injuries: int = 0,
+    away_injuries: int = 0,
 ) -> dict:
     """Returns a dict with keys matching src.progol.config.FEATURE_COLS + categoricals."""
     elo_table = compute_elo_table(conn, date)
@@ -214,6 +216,7 @@ def build_inference_row(
         'total_goals_avg': (h_block['total_goals_ewma'] + a_block['total_goals_ewma']) / 2.0,
         'draw_rate_avg': (h_block['drew_ewma'] + a_block['drew_ewma']) / 2.0,
         'is_cup': 1 if int(league_id) in config.CUP_LEAGUE_IDS else 0,
+        'injuries_diff': int(home_injuries) - int(away_injuries),
         'prob_market_h': market_probs[0],
         'prob_market_d': market_probs[1],
         'prob_market_a': market_probs[2],
