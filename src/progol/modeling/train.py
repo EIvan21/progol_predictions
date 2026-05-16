@@ -102,9 +102,15 @@ def apply_dirichlet(y_prob, calibrator, eps=1e-9):
 
 def _build_base_pipeline(estimator):
     """TargetEncoder + StandardScaler + estimator. Refits per-fold inside CV
-    so the encoder doesn't see fold validation targets."""
+    so the encoder doesn't see fold validation targets.
+
+    smoothing=10 shrinks rare-category target means toward the global mean
+    more aggressively than the library default (1.0). With CAT_COLS now
+    carrying home_id (~1342 teams) and referee (thousands, most with <10
+    matches), the higher smoothing prevents single-match outliers from
+    leaking as strong-signal encodings."""
     return Pipeline([
-        ('encoder', TargetEncoder(cols=config.CAT_COLS)),
+        ('encoder', TargetEncoder(cols=config.CAT_COLS, smoothing=10.0)),
         ('scaler', StandardScaler()),
         ('clf', estimator),
     ])
@@ -183,8 +189,25 @@ def train_heavy_model():
         stack_method='predict_proba', n_jobs=-1,
     )
 
+    # Time-decay sample weight: exp(-Δdays / half_life). With half_life=365
+    # a match from 1 year ago weighs ~37%, 2 years ago ~14%. This biases
+    # the model toward recent form, transfers, and tactical trends in a
+    # data set that spans 2019-2026.
+    #
+    # CAVEAT (sklearn #21134): Pipeline drops sample_weight before it hits
+    # the inner clf step, so this currently only lands on the isotonic
+    # calibrator and the meta-LR. Unlike the previous class-weight
+    # experiment, time-decay weights are NOT correlated with the target
+    # class, so they shouldn't induce the over-prediction-of-draws bias
+    # that prior sample_weight attempts caused. Batch C plans a restructure
+    # that pushes the weight to the base learners directly.
+    train_dates = pd.to_datetime(train_full['date'])
+    ref_date = train_dates.max()
+    HALF_LIFE_DAYS = 365.0
+    sample_weight = np.exp(-((ref_date - train_dates).dt.days) / HALF_LIFE_DAYS).values
+
     logger.info("Training stacking ensemble...")
-    stacking_model.fit(X_train, y_train)
+    stacking_model.fit(X_train, y_train, sample_weight=sample_weight)
 
     y_pred = stacking_model.predict(X_test)
     y_prob = stacking_model.predict_proba(X_test)

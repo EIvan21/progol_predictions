@@ -70,7 +70,14 @@ def walk_forward(df: pd.DataFrame, n_folds: int = 6, min_train_frac: float = 0.4
 
         Xtr, ytr = train[feature_cols], train['target']
         Xte, yte = test[feature_cols], test['target']
-        sw = compute_sample_weight('balanced', y=ytr)
+        # Time-decay weighting (matches train.py). Class-balanced weights
+        # were previously used here but are no longer applied per the
+        # over-prediction-of-draws investigation; class balance is handled
+        # at the base estimator level (class_weight on lgb/cat/rf,
+        # class_weights on cat). See train.py comments for details.
+        train_dates = pd.to_datetime(train['date'])
+        ref_date = train_dates.max()
+        sw = np.exp(-((ref_date - train_dates).dt.days) / 365.0).values
 
         model = _build_stacker()
         model.fit(Xtr, ytr, sample_weight=sw)

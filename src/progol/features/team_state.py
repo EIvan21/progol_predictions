@@ -9,7 +9,7 @@ import pandas as pd
 import sqlite3
 
 from src.progol import config
-from src.progol.features.elo import update_pair, BASE_RATING
+from src.progol.features.elo import update_pair, BASE_RATING, _league_mean
 from src.progol.features.rolling import EWMA_SPAN
 
 
@@ -28,22 +28,29 @@ def _form_to_points(form_str):
 
 
 def compute_elo_table(conn: sqlite3.Connection, before_date: str) -> dict:
-    """Walk every match strictly before `before_date` and return team_id -> Elo."""
+    """Walk every match strictly before `before_date` and return team_id -> Elo.
+    Mirrors features.elo.calculate_elo_ratings (league-aware cold start) so
+    inference and training use the same initialization rule."""
     q = """
-        SELECT date, home_id, away_id, goals_home, goals_away
+        SELECT date, home_id, away_id, goals_home, goals_away, league_id
         FROM matches
         WHERE status = 'FT' AND date < ?
         ORDER BY date ASC
     """
     df = pd.read_sql_query(q, conn, params=(before_date,))
     ratings = {}
+    team_to_league = {}
     for _, row in df.iterrows():
         hid, aid = row['home_id'], row['away_id']
-        h = ratings.get(hid, BASE_RATING)
-        a = ratings.get(aid, BASE_RATING)
+        lid = row['league_id'] if 'league_id' in df.columns else None
+        h = ratings[hid] if hid in ratings else _league_mean(ratings, team_to_league, lid, BASE_RATING)
+        a = ratings[aid] if aid in ratings else _league_mean(ratings, team_to_league, lid, BASE_RATING)
         new_h, new_a = update_pair(h, a, row['goals_home'], row['goals_away'])
         ratings[hid] = new_h
         ratings[aid] = new_a
+        if lid is not None:
+            team_to_league[hid] = lid
+            team_to_league[aid] = lid
     return ratings
 
 
@@ -221,6 +228,6 @@ def build_inference_row(
         'prob_market_d': market_probs[1],
         'prob_market_a': market_probs[2],
         'league_id': league_id,
-        'venue': venue or "Unknown",
+        'home_id': int(home_id),
         'referee': referee or "Unknown",
     }

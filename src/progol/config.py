@@ -28,7 +28,12 @@ BEST_PARAMS_PATH = MODEL_DIR / "best_params.json"
 LATEST_POINTER_PATH = MODEL_DIR / "latest.json"
 PROGOL_IDS_PATH = DATA_DIR / "current_progol_ids.json"
 
-CAT_COLS = ['venue', 'referee', 'league_id']
+# venue (stadium name) is ~99% redundant with home_team_id since each club
+# plays home games at one stadium. Switching to home_id lets TargetEncoder
+# learn cleaner per-club home-advantage patterns instead of duplicating the
+# signal across (venue, home_id) interactions. Loses signal for neutral-site
+# finals (UCL/cup finals) — accepted as a minor cost.
+CAT_COLS = ['home_id', 'referee', 'league_id']
 # API-Football league IDs that are knock-out cup competitions rather than
 # regular league play. Used to derive the `is_cup` feature, which lets the
 # model share signal across cup competitions (knock-out pressure, mixed-tier
