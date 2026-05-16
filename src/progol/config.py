@@ -67,12 +67,6 @@ FEATURE_COLS = [
     # from API /injuries; 0 when API has no data for that date. Captures
     # "team is missing 3 starters" type signal that EWMA features can't.
     'injuries_diff',
-    # Raw per-side EWMA scoring rates. Redundant with the *_diff features
-    # for GBMs (LGB/CatBoost will pick whichever splits better), but the
-    # Poisson DC base learner needs the absolute values to estimate lambdas
-    # — diffs alone collapse Bayern 3-1 Stuttgart and Burnley 1-(-1) Spurs
-    # to the same +2 signal. See modeling/poisson_dc.py.
-    'home_gf_ewma', 'away_gf_ewma', 'home_ga_ewma', 'away_ga_ewma',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
 

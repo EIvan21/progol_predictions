@@ -4,11 +4,12 @@ import logging
 import joblib
 import numpy as np
 import pandas as pd
+import xgboost as xgb
 import lightgbm as lgb
 from catboost import CatBoostClassifier
 from category_encoders import TargetEncoder
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import StackingClassifier
+from sklearn.ensemble import RandomForestClassifier, StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (accuracy_score, brier_score_loss,
                              classification_report, log_loss)
@@ -17,7 +18,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize_scalar
 from src.progol import config
-from src.progol.modeling.poisson_dc import PoissonDCEstimator
 from src.progol.utils import drift
 from src.progol.utils.logging_setup import configure as configure_logging
 from src.progol.storage import gcs, versioning
@@ -147,6 +147,10 @@ def train_heavy_model():
     lgb_params.setdefault('class_weight', 'balanced')
     lgb_clf = lgb.LGBMClassifier(**lgb_params)
 
+    # XGBoost has no class_weight param for multiclass; sample_weight is the lever.
+    xgb_clf = xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=6,
+                                random_state=42, eval_metric='mlogloss')
+
     # CatBoost: per-class weights derived from observed class frequencies.
     class_freq = y_train.value_counts(normalize=True).sort_index()
     cat_weights = (1.0 / class_freq).reindex([0, 1, 2]).fillna(1.0).tolist()
@@ -154,24 +158,19 @@ def train_heavy_model():
                                  random_state=42, verbose=0, allow_writing_files=False,
                                  class_weights=cat_weights)
 
-    # Stack composition (Batch C): LGB + CatBoost + Poisson DC. Dropped
-    # XGBoost (too similar to LGB — both are histogram-based gradient
-    # boosting on the same X; meta-LR couldn't disentangle them) and
-    # RandomForest (slowest base learner, weakest contributor in feature
-    # importance breakdowns from prior runs). Poisson brings structural
-    # diversity: it models the goal-generation process directly instead
-    # of learning the 1X2 boundary, so the meta-LR has something genuinely
-    # different to ensemble.
-    #
-    # Poisson is NOT wrapped in _build_base_pipeline because it reads raw
-    # EWMA columns (home_gf_ewma etc) — TargetEncoder + StandardScaler
-    # would mangle them. Still wrapped in CalibratedClassifierCV because
-    # raw DC probs are slightly miscalibrated (rho is fixed, not jointly
-    # optimized with team-level params).
+    rf_clf = RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42,
+                                    class_weight='balanced')
+
+    # Calibration: isotonic. Sigmoid (Platt) was preferred for robustness on
+    # small/medium data, but sklearn 1.5.x routes sigmoid through the Cython
+    # CyHalfBinomialLoss whose dtype dispatch breaks across mixed-dtype proba
+    # outputs (xgb→float32, lgb/cat/rf→float64). Isotonic (PAVA) is
+    # dtype-agnostic. Watch for probability collapse on tail classes.
     estimators = [
         ('lgb', CalibratedClassifierCV(_build_base_pipeline(lgb_clf), method='isotonic', cv=3)),
+        ('xgb', CalibratedClassifierCV(_build_base_pipeline(xgb_clf), method='isotonic', cv=3)),
         ('cat', CalibratedClassifierCV(_build_base_pipeline(cat_clf), method='isotonic', cv=3)),
-        ('poi', CalibratedClassifierCV(PoissonDCEstimator(), method='isotonic', cv=3)),
+        ('rf',  CalibratedClassifierCV(_build_base_pipeline(rf_clf),  method='isotonic', cv=3)),
     ]
 
     # Class balance is already handled at the base-estimator level
