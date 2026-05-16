@@ -214,9 +214,19 @@ def backfill_teams(max_workers=10):
 
 
 def enrich_database_alpha(max_workers=10):
+    # Backfill scope: any FT match without a Batch-A timestamp. This covers
+    # (a) freshly discovered matches (no enrichment of any kind) and
+    # (b) historically-enriched rows that pre-date xG-real/injuries and
+    # therefore need a re-pull. update_alpha_stats sets alpha_v2_at, so
+    # the loop converges on a per-row "done" marker rather than the old
+    # heuristic of "odds_home IS NULL" (which misses pre-existing rows).
     while True:
         conn = database.get_connection()
-        query = "SELECT fixture_id FROM matches WHERE status = 'FT' AND odds_home IS NULL LIMIT 100"
+        query = """
+            SELECT fixture_id FROM matches
+            WHERE status = 'FT' AND alpha_v2_at IS NULL
+            LIMIT 100
+        """
         fixtures = pd.read_sql_query(query, conn)['fixture_id'].tolist()
         conn.close()
         if not fixtures: break
@@ -225,8 +235,14 @@ def enrich_database_alpha(max_workers=10):
             future_to_fid = {executor.submit(fetch_alpha_details, fid): fid for fid in fixtures}
             for future in as_completed(future_to_fid):
                 fid, data = future.result()
-                if data: database.update_alpha_stats(fid, data)
-                else: database.update_alpha_stats(fid, {'o_h': 0})
+                if data:
+                    database.update_alpha_stats(fid, data)
+                else:
+                    # Mark this fixture as attempted so the loop converges,
+                    # but DO NOT overwrite existing fields. A prior enrichment
+                    # may have left valid odds/xg in place; a transient API
+                    # miss shouldn't wipe them.
+                    database.mark_alpha_v2_tried(fid)
         time.sleep(0.5)
 
 if __name__ == "__main__":

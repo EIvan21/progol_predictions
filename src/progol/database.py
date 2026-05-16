@@ -71,9 +71,17 @@ def init_db():
         ('xg_is_real', "ALTER TABLE matches ADD COLUMN xg_is_real INTEGER DEFAULT 0"),
         ('home_injuries', "ALTER TABLE matches ADD COLUMN home_injuries INTEGER DEFAULT 0"),
         ('away_injuries', "ALTER TABLE matches ADD COLUMN away_injuries INTEGER DEFAULT 0"),
+        # Marker: set by update_alpha_stats whenever the Batch-A pipeline
+        # touches the row. NULL means "needs (re)enrichment with the
+        # new fields". Different from odds_home IS NULL because old rows
+        # have non-null odds but stale-default xg_is_real/injuries.
+        ('alpha_v2_at', "ALTER TABLE matches ADD COLUMN alpha_v2_at TEXT"),
     ]:
         if col not in existing_cols:
             cursor.execute(ddl)
+    # Index used by the backfill loop in fetch_data.enrich_database_alpha
+    # (otherwise full table scan for every batch of 100).
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_matches_alpha_v2 ON matches(status, alpha_v2_at)")
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS teams (
             team_id INTEGER PRIMARY KEY,
@@ -241,6 +249,20 @@ def save_matches_to_db(matches_list, season):
     return count
 
 
+def mark_alpha_v2_tried(fixture_id):
+    """Stamp alpha_v2_at without touching any other field. Used by the
+    backfill loop when fetch_alpha_details returns no data so we don't
+    re-attempt the same fixture forever, but also don't blow away the
+    existing odds/xg/etc. that a prior enrichment populated."""
+    conn = get_connection()
+    conn.execute(
+        "UPDATE matches SET alpha_v2_at = datetime('now') WHERE fixture_id = ?",
+        (fixture_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
 def update_alpha_stats(fixture_id, data):
     conn = get_connection()
     conn.execute('''
@@ -253,7 +275,8 @@ def update_alpha_stats(fixture_id, data):
         home_form = ?, away_form = ?,
         venue_id = ?, venue_surface = ?,
         h2h_home_wins = ?, h2h_draws = ?, h2h_away_wins = ?,
-        home_injuries = ?, away_injuries = ?
+        home_injuries = ?, away_injuries = ?,
+        alpha_v2_at = datetime('now')
         WHERE fixture_id = ?
     ''', (
         data.get('h_sh'), data.get('a_sh'), data.get('h_po'), data.get('a_po'),
