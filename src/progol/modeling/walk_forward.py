@@ -12,35 +12,34 @@ import numpy as np
 import pandas as pd
 
 from src.progol import config
+from src.progol.modeling.poisson_dc import PoissonDCEstimator
 from src.progol.modeling.train import _build_base_pipeline, calculate_brier_score
 from sklearn.calibration import CalibratedClassifierCV
-from sklearn.ensemble import RandomForestClassifier, StackingClassifier
+from sklearn.ensemble import StackingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, log_loss
 from sklearn.model_selection import StratifiedKFold
-from sklearn.utils.class_weight import compute_sample_weight
 
 import lightgbm as lgb
-import xgboost as xgb
 from catboost import CatBoostClassifier
 
 logger = logging.getLogger(__name__)
 
 
 def _build_stacker():
+    # Mirrors train.py's estimator composition (Batch C): LGB + CatBoost
+    # + Poisson DC. Same dropping of XGB (redundant with LGB) and RF
+    # (slow, weak contributor). Walk-forward must use the same stack as
+    # production training or its accuracy/log-loss numbers don't reflect
+    # what the deployed model will achieve.
     estimators = [
         ('lgb', CalibratedClassifierCV(_build_base_pipeline(
             lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=31, random_state=42, verbose=-1)
         ), method='isotonic', cv=3)),
-        ('xgb', CalibratedClassifierCV(_build_base_pipeline(
-            xgb.XGBClassifier(n_estimators=300, learning_rate=0.03, max_depth=6, random_state=42, eval_metric='mlogloss')
-        ), method='isotonic', cv=3)),
         ('cat', CalibratedClassifierCV(_build_base_pipeline(
             CatBoostClassifier(n_estimators=300, learning_rate=0.03, depth=6, random_state=42, verbose=0, allow_writing_files=False)
         ), method='isotonic', cv=3)),
-        ('rf', CalibratedClassifierCV(_build_base_pipeline(
-            RandomForestClassifier(n_estimators=300, max_depth=10, random_state=42)
-        ), method='isotonic', cv=3)),
+        ('poi', CalibratedClassifierCV(PoissonDCEstimator(), method='isotonic', cv=3)),
     ]
     return StackingClassifier(
         estimators=estimators,

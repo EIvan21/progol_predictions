@@ -224,6 +224,12 @@ def build_inference_row(
         'draw_rate_avg': (h_block['drew_ewma'] + a_block['drew_ewma']) / 2.0,
         'is_cup': 1 if int(league_id) in config.CUP_LEAGUE_IDS else 0,
         'injuries_diff': int(home_injuries) - int(away_injuries),
+        # Raw per-side EWMA — consumed by PoissonDCEstimator. Diff-derived
+        # features above are kept for the GBM base learners.
+        'home_gf_ewma': h_block['gf_ewma'],
+        'away_gf_ewma': a_block['gf_ewma'],
+        'home_ga_ewma': h_block['ga_ewma'],
+        'away_ga_ewma': a_block['ga_ewma'],
         'prob_market_h': market_probs[0],
         'prob_market_d': market_probs[1],
         'prob_market_a': market_probs[2],
