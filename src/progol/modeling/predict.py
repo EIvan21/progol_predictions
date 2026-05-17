@@ -316,6 +316,23 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
 
     conn.close()
 
+    # Track drift across runs (Batch E). One predict run = one record;
+    # check_pressure raises an alert when drift_rate stays high across the
+    # last 3 runs. The alert is a file the dashboard can surface — we do
+    # NOT auto-retrigger training from here because Cloud Scheduler
+    # already runs weekly; this is for human visibility.
+    if results:
+        n_drift = sum(1 for r in results if r.get('drift'))
+        try:
+            history_path = config.MODEL_DIR / 'drift_history.json'
+            alert_path = config.MODEL_DIR / 'drift_alert.txt'
+            history = drift.record_run(history_path, len(results), n_drift)
+            alert = drift.check_pressure(history, alert_path=alert_path)
+            if alert:
+                logger.warning(alert)
+        except Exception as exc:
+            logger.warning(f"drift_pressure_tracking_failed: {exc}")
+
     # Backfill actual_label for any concurso games whose fixtures have settled.
     try:
         n = database.settle_concurso_actuals()

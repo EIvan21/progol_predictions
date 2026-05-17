@@ -86,6 +86,10 @@ python -m src.progol.modeling.backtest --kelly 0.25 --min-edge 0.04 || true
 
 python -m src.progol.reporting.eda || echo "eda generation failed"
 python -m src.progol.reporting.generate_report || echo "training summary failed"
+# Per-league dashboard (Batch E): renders the per_league block from
+# metrics.json + writes a CSV under reports/ for trend tracking. Failures
+# are non-fatal — the table is informational, not a build gate.
+python -m src.progol.reporting.league_dashboard --csv reports/league_dashboard.csv || echo "league dashboard skipped"
 # Slate scrape may exit 2 on partial resolve (e.g., 18/21 matches due to
 # missing NICKNAME_MAP entries). Don't kill the pipeline — predict scores
 # whichever IDs were resolved AND runs the upcoming-fixtures pass that's
