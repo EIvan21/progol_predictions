@@ -96,6 +96,11 @@ python -m src.progol.reporting.league_dashboard --csv reports/league_dashboard.c
 # independent of the Progol slate.
 python -m src.progol.ingest.get_progol_ids || echo "scrape partial — continuing with resolved IDs"
 python -m src.progol.modeling.predict || echo "prediction step failed"
+# Progol-history dashboard: per-concurso hit-rate (main + revancha) for the
+# last N concursos. Must run AFTER predict.py because predict.py invokes
+# settle_concurso_actuals() to backfill actual_label from finished matches.
+# Non-fatal so a malformed concurso row can't block the GCS upload.
+python -m src.progol.reporting.progol_history --csv reports/progol_history.csv || echo "progol history skipped"
 
 # Notify via Telegram. Non-fatal: a Telegram outage shouldn't fail the run
 # or block the GCS uploads in the EXIT trap.

@@ -380,6 +380,77 @@ def settle_concurso_actuals():
     return n
 
 
+def get_concurso_hits(concurso_number):
+    """Compute hit-rate for a single concurso, split main (slots 1-14) vs
+    revancha (15-21). Returns:
+        {
+          'concurso_number': int,
+          'main':     {'total','predicted','settled','hits','slots': [{...}]},
+          'revancha': {'total','predicted','settled','hits','slots': [{...}]},
+        }
+    where each slot entry is
+        {'game_number','predicted_label','actual_label','correct': bool|None}.
+
+    `correct` is True/False when both labels are present, None when either
+    side is missing. This is the primitive used by the Progol-history report.
+    """
+    conn = get_connection()
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute('''
+        SELECT game_number, predicted_label, actual_label
+        FROM progol_concurso_games
+        WHERE concurso_number = ?
+        ORDER BY game_number
+    ''', (concurso_number,)).fetchall()
+    conn.close()
+
+    def _empty():
+        # `compared` is the denominator for accuracy: slots where BOTH
+        # predicted_label and actual_label exist. Different from `settled`
+        # (any actual present), which can include slots we never predicted
+        # for — those would otherwise drag the rate to zero.
+        return {'total': 0, 'predicted': 0, 'settled': 0,
+                'compared': 0, 'hits': 0, 'slots': []}
+
+    main, rev = _empty(), _empty()
+    for r in rows:
+        gn = r['game_number']
+        pred = r['predicted_label']
+        actual = r['actual_label']
+        correct = None
+        if pred is not None and actual is not None:
+            correct = (int(pred) == int(actual))
+        bucket = main if gn <= 14 else rev
+        bucket['total'] += 1
+        if pred is not None:
+            bucket['predicted'] += 1
+        if actual is not None:
+            bucket['settled'] += 1
+        if correct is not None:
+            bucket['compared'] += 1
+        if correct is True:
+            bucket['hits'] += 1
+        bucket['slots'].append({
+            'game_number': gn,
+            'predicted_label': pred,
+            'actual_label': actual,
+            'correct': correct,
+        })
+    return {'concurso_number': concurso_number, 'main': main, 'revancha': rev}
+
+
+def list_recent_concursos(n=12):
+    """Returns the last `n` concurso_numbers (descending), regardless of
+    whether they have predictions or settled actuals yet."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT concurso_number FROM progol_concursos ORDER BY concurso_number DESC LIMIT ?",
+        (n,),
+    ).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
 def get_concurso_with_games(concurso_number):
     """Returns (header_dict, games_list) for the bot/dashboard."""
     conn = get_connection()

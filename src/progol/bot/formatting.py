@@ -276,6 +276,95 @@ def format_budget_plan(concurso_number, plan, games=None, budget_input=None):
     return "\n".join(out)
 
 
+def format_progol_history(rows):
+    """HTML body for /historial. Compact table inside <pre> with the per-
+    concurso hit count (main + revancha) for the last N concursos plus a
+    PROMEDIO footer over the concursos that have at least one compared slot.
+    Mirrors reporting/progol_history.render_table but uses an em-dash
+    (HTML renders it fine) and Telegram-friendly widths."""
+    if not rows:
+        return "<i>Sin concursos en la base.</i>"
+
+    DASH = '—'
+    header_lines = ["<b>📊 Historial Progol</b>", ""]
+
+    table_lines = [f"{'#':>5}  {'Main':>13}  {'Revancha':>13}  {'Notas'}"]
+    table_lines.append("-" * 60)
+
+    main_hits = main_compared = 0
+    rev_hits = rev_compared = 0
+    n_with_outcomes = 0
+
+    for s in rows:
+        cn = s['concurso_number']
+        m, r = s['main'], s['revancha']
+        main_str = _fmt_progol_score(m, dash=DASH)
+        rev_str = _fmt_progol_score(r, dash=DASH)
+        note = _progol_note(s)
+        table_lines.append(
+            f"{cn:>5}  {main_str:>13}  {rev_str:>13}  {note}"
+        )
+        if m['compared'] > 0 or r['compared'] > 0:
+            main_hits += m['hits']
+            main_compared += m['compared']
+            rev_hits += r['hits']
+            rev_compared += r['compared']
+            n_with_outcomes += 1
+
+    if main_compared > 0 or rev_compared > 0:
+        table_lines.append("-" * 60)
+        avg_main = (f"{main_hits}/{main_compared} ({main_hits/main_compared*100:.0f}%)"
+                    if main_compared else "n/a")
+        avg_rev = (f"{rev_hits}/{rev_compared} ({rev_hits/rev_compared*100:.0f}%)"
+                   if rev_compared else "n/a")
+        table_lines.append(
+            f"AVG    main {avg_main}   rev {avg_rev}"
+        )
+        footer = (
+            f"\n<i>Promedio sobre {n_with_outcomes} concurso(s) con resultados "
+            "comparables. Concursos sin predicción persistida muestran "
+            f"{DASH}/N.</i>"
+        )
+    else:
+        footer = (
+            "\n<i>Aún no hay concursos con predicción + resultado comparables. "
+            "Las celdas vacías son normales hasta que cierren los fixtures.</i>"
+        )
+
+    return "\n".join(header_lines) + "<pre>" + "\n".join(table_lines) + "</pre>" + footer
+
+
+def _fmt_progol_score(bucket, dash='—'):
+    """Telegram-side mirror of reporting.progol_history._fmt_score. Kept
+    here (not imported) to avoid pulling the reporting module + its CLI
+    deps into the slim bot image."""
+    total = bucket['total']
+    compared = bucket['compared']
+    hits = bucket['hits']
+    if compared == 0:
+        return f"{dash}/{total}"
+    if compared < total:
+        return f"{hits}/{compared} of {total}"
+    return f"{hits}/{total}"
+
+
+def _progol_note(s):
+    status = s['status']
+    m, r = s['main'], s['revancha']
+    if status == 'no_predictions':
+        return "sin predicción"
+    if status == 'in_progress':
+        pend_main = m['predicted'] - m['compared']
+        pend_rev = r['predicted'] - r['compared']
+        parts = []
+        if pend_main:
+            parts.append(f"{pend_main}m")
+        if pend_rev:
+            parts.append(f"{pend_rev}r")
+        return f"en curso ({'+'.join(parts)} pend)" if parts else "en curso"
+    return "cerrado"
+
+
 def format_match_prediction(concurso_number, game, probs):
     """One-game response for /predecir_partido (active concurso)."""
     h = _html_escape((game.get('home_name') or '?').upper())

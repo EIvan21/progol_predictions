@@ -43,6 +43,7 @@ from src.progol.bot.formatting import (
     _decode_probs,
     format_budget_plan,
     format_concurso_message,
+    format_progol_history,
     format_users_list,
     format_match_prediction,
     format_upcoming_match_prediction,
@@ -62,6 +63,7 @@ HELP_TEXT = (
     "/predecir_partido EQUIPO_A vs EQUIPO_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
     "\n<b>Análisis</b>\n"
     "/presupuesto — plan óptimo de dobles/triples para tu presupuesto\n"
+    "/historial — hits/14 + revancha de los últimos 8 concursos\n"
     "/cancelar — aborta una conversación en curso\n"
     "\n<b>Cuenta</b>\n"
     "/whoami — tu chat_id, rol y status\n"
@@ -249,6 +251,28 @@ async def cmd_predecir_progol(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_concurso_message(concurso, games, latest=latest),
         parse_mode='HTML',
+    )
+
+
+async def cmd_historial(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Last N concursos: hits/14 main + hits/7 revancha + per-concurso notes.
+    Syncs GCS first so a fixture that just settled (and was picked up by the
+    trainer's settle_concurso_actuals pass) is visible without waiting for
+    the next /predecir_progol."""
+    await update.message.reply_text("Sincronizando con GCS...")
+    _gcs_sync()
+    # Lazy import: keeps the formatting module import-clean for the slim bot
+    # but avoids the formatting module needing to know about reporting.
+    from src.progol.reporting.progol_history import summarize_recent
+    n = 8
+    if ctx.args:
+        try:
+            n = max(1, min(20, int(ctx.args[0])))
+        except ValueError:
+            pass
+    rows = summarize_recent(n=n)
+    await update.message.reply_text(
+        format_progol_history(rows), parse_mode='HTML'
     )
 
 
@@ -486,6 +510,7 @@ def main():
     app.add_handler(CommandHandler('ultima_prediccion_progol', user_g(cmd_ultima)))
     app.add_handler(CommandHandler('predecir_progol', user_g(cmd_predecir_progol)))
     app.add_handler(CommandHandler('predecir_partido', user_g(cmd_predecir_partido)))
+    app.add_handler(CommandHandler('historial', user_g(cmd_historial)))
 
     # /presupuesto conversation. Entry is guarded; the state handler doesn't
     # need its own guard since it's only reachable after entry succeeds.
