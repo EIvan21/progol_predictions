@@ -4,7 +4,6 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 
-import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
@@ -21,6 +20,46 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 API_BASE = "https://v3.football.api-sports.io"
+
+
+DEFAULT_SLOT_PRIOR = (0.45, 0.25, 0.30)
+
+
+def align_slots(match_ids, game_numbers):
+    """Pair each match_id with the Progol slot it occupies in the slate.
+
+    The Progol slate's original game_number (1..21) is the source of truth
+    for "what position in the boleto this match is". When some fixtures
+    fail to resolve, the resolved subset is shorter than the slate — if
+    we enumerate(match_ids) we'd assign each resolved match to position
+    1..N, NOT its original game_number, and downstream concurso writes +
+    plan-optimizer indices would all shift by the gap. The
+    `game_numbers` parallel array (written by get_progol_ids) carries
+    the original slot per match_id, so the safe path is zip(...).
+
+    Falls back to enumerate when game_numbers is missing or its length
+    doesn't match — preserves behavior with older slate JSONs that didn't
+    persist game_numbers. Returns a list of (slot, match_id) tuples.
+    """
+    if game_numbers and len(game_numbers) == len(match_ids):
+        return list(zip(game_numbers, match_ids))
+    return list(enumerate(match_ids, start=1))
+
+
+def probs_to_slot_array(results, n_slots=14, default_prior=DEFAULT_SLOT_PRIOR):
+    """Build a (n_slots, 3) ndarray indexed by ORIGINAL Progol slot.
+
+    `results` is the per-fixture output of the predict loop; each item
+    must have 'gn' (game_number 1..21) and 'h'/'d'/'v' probs. Missing
+    slots (fixtures that failed to score, or revancha slots when
+    n_slots=14) get `default_prior` — that way the budget optimizer
+    still sees all 14 positions, and missing-slate slots naturally
+    surface as triples since their distribution is near-uniform.
+    """
+    probs_by_slot = {int(r['gn']): [float(r['h']), float(r['d']), float(r['v'])]
+                     for r in results if r.get('gn')}
+    main = [probs_by_slot.get(s, list(default_prior)) for s in range(1, n_slots + 1)]
+    return np.array(main)
 
 
 def _injuries_from_api(fixture_id: int, home_id: int, away_id: int, session):
@@ -203,6 +242,10 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
         logger.error("Model not found. Run training first.")
         return
 
+    # Lazy import: joblib is part of the heavy ML stack (only available on
+    # the trainer VM). The slot-alignment helpers at module top must be
+    # importable without it so unit tests can exercise them in slimmer envs.
+    import joblib
     pkg = joblib.load(model_path)
     model = pkg['model']
     feature_cols = pkg['features']
@@ -235,12 +278,7 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
     if concurso_number:
         print(f"Concurso: {concurso_number}")
 
-    # Align each fixture to its ORIGINAL Progol slot (1..21). If the caller
-    # didn't pass game_numbers (older slate JSON), fall back to enumeration.
-    if game_numbers and len(game_numbers) == len(match_ids):
-        slot_pairs = list(zip(game_numbers, match_ids))
-    else:
-        slot_pairs = list(enumerate(match_ids, start=1))
+    slot_pairs = align_slots(match_ids, game_numbers)
 
     for game_idx, mid in slot_pairs:
         try:
@@ -352,15 +390,11 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
     print("=" * 105 + "\n")
 
     if results:
-        # Index probs by ORIGINAL slot so the plan / top quinielas line up
-        # with concurso game_numbers 1..14, not the resolved-list position.
-        # Unresolved main-slate slots get a neutral 1X2 prior so the budget
-        # optimizer still considers all 14 positions (those slots will tend
-        # to surface as triples since their distribution is flat-ish).
-        probs_by_slot = {r['gn']: [r['h'], r['d'], r['v']] for r in results}
-        DEFAULT_PRIOR = [0.45, 0.25, 0.30]
-        main_probs = [probs_by_slot.get(s, DEFAULT_PRIOR) for s in range(1, 15)]
-        probs_arr = np.array(main_probs)
+        # See probs_to_slot_array(): indexes by ORIGINAL Progol slot so the
+        # plan / top quinielas line up with concurso game_numbers 1..14,
+        # not the resolved-list position. Unresolved slots get a neutral
+        # prior so they surface as triples in /presupuesto.
+        probs_arr = probs_to_slot_array(results, n_slots=14)
 
         # MC sampling instead of greedy top-N: greedy returns 10 quinielas
         # that differ from the modal pick by 1-2 swaps; MC produces

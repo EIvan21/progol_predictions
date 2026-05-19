@@ -18,7 +18,10 @@ import requests
 from dotenv import load_dotenv
 
 from src.progol import config, database
-from src.progol.bot.formatting import format_concurso_message
+from src.progol.bot.formatting import (
+    format_concurso_message,
+    format_previous_concurso_recap,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -50,6 +53,19 @@ def send():
         return 2
 
     text = format_concurso_message(concurso, games, latest=latest)
+
+    # Append a one-line recap of the previous concurso ("we got 8/14 last
+    # week") when comparable data is available. Failures are non-fatal —
+    # the main message must always go out even if the recap query breaks.
+    try:
+        prev = database.get_previous_concurso_number(concurso)
+        if prev:
+            recap = format_previous_concurso_recap(prev, database.get_concurso_hits(prev))
+            if recap:
+                text = text + "\n\n" + recap
+    except Exception as exc:
+        logger.warning(f"recap_skipped: {exc}")
+
     res = requests.post(
         TELEGRAM_API.format(token=token),
         json={'chat_id': chat_id, 'text': text, 'parse_mode': 'HTML'},

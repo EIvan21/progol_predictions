@@ -276,6 +276,42 @@ def format_budget_plan(concurso_number, plan, games=None, budget_input=None):
     return "\n".join(out)
 
 
+def format_previous_concurso_recap(prev_concurso, hits):
+    """One-line HTML recap "Concurso pasado #N: Main 8/14 ✅ · Rev 5/7" for
+    appending to the weekly send_predictions message. Returns None when
+    there's nothing comparable yet — caller should skip the append rather
+    than show an empty line.
+
+    `hits` is the dict returned by database.get_concurso_hits. We don't
+    rebuild it here so callers can decide whether to query the DB at all.
+    """
+    if not hits:
+        return None
+    m = hits['main']
+    r = hits['revancha']
+    if m['compared'] == 0 and r['compared'] == 0:
+        return None
+
+    parts = []
+    if m['compared'] > 0:
+        rate = m['hits'] / m['compared']
+        # Thresholds picked from the user-stated baseline: 8/14 is a "good
+        # week" (57%) so ✅. 5/14 (36%) is fair, lower is rough. These are
+        # display-only, never gate anything.
+        if rate >= 0.55:
+            emoji = '✅'
+        elif rate >= 0.40:
+            emoji = '➖'
+        else:
+            emoji = '❌'
+        suffix = f" of {m['total']}" if m['compared'] < m['total'] else ''
+        parts.append(f"Main {m['hits']}/{m['compared']}{suffix} {emoji}")
+    if r['compared'] > 0:
+        suffix = f" of {r['total']}" if r['compared'] < r['total'] else ''
+        parts.append(f"Rev {r['hits']}/{r['compared']}{suffix}")
+    return f"<i>📈 Concurso pasado #{prev_concurso}: {' · '.join(parts)}</i>"
+
+
 def format_progol_history(rows):
     """HTML body for /historial. Compact table inside <pre> with the per-
     concurso hit count (main + revancha) for the last N concursos plus a

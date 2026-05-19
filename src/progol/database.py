@@ -439,6 +439,20 @@ def get_concurso_hits(concurso_number):
     return {'concurso_number': concurso_number, 'main': main, 'revancha': rev}
 
 
+def get_previous_concurso_number(concurso_number):
+    """Returns the concurso_number immediately prior to `concurso_number`
+    (largest existing value that is strictly less), or None when none exists.
+    Used by send_predictions to attach a "last week" recap to the weekly
+    message without assuming concurso_number-1 is contiguous."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT MAX(concurso_number) FROM progol_concursos WHERE concurso_number < ?",
+        (concurso_number,),
+    ).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
 def list_recent_concursos(n=12):
     """Returns the last `n` concurso_numbers (descending), regardless of
     whether they have predictions or settled actuals yet."""
