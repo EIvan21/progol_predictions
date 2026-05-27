@@ -58,6 +58,32 @@ _EXPECTED_MAPPINGS = [
     ("PUMAS", "UNAM PUMAS"),
     ("CHIVAS", "GUADALAJARA"),
     ("TIGRES", "TIGRES UANL"),
+    # National teams (Spanish) — concurso 2335 failures
+    ("E.U.A.", "USA"),
+    ("NORUEGA", "NORWAY"),
+    ("SUECIA", "SWEDEN"),
+    ("JAPON", "JAPAN"),
+    ("ISLANDIA", "ICELAND"),
+    ("CHEQUIA", "CZECH REPUBLIC"),
+    ("BRASIL", "BRAZIL"),
+    ("PANAMA", "PANAMA"),
+    ("A. SAUDITA", "SAUDI ARABIA"),
+    ("MEXICO", "MEXICO"),
+    ("ECUADOR", "ECUADOR"),
+    ("KOSOVO", "KOSOVO"),
+    ("ALEMANIA", "GERMANY"),
+    ("FRANCIA", "FRANCE"),
+    ("INGLATERRA", "ENGLAND"),
+    ("HOLANDA", "NETHERLANDS"),
+    ("COREA SUR", "SOUTH KOREA"),
+    ("MARRUECOS", "MOROCCO"),
+    ("AUSTRALIA", "AUSTRALIA"),
+    # Brazil Serie B — concurso 2335 games 12, 21
+    ("AVAI", "AVAI FC"),
+    ("ATL. GO", "ATLETICO GOIANIENSE"),
+    # Swedish Allsvenskan — concurso 2335 game 14
+    ("DEGERFORS", "DEGERFORS IF"),
+    ("BROMMAPOJ", "BROMMAPOJKARNA"),
 ]
 
 

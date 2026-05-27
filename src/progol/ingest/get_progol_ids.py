@@ -62,6 +62,36 @@ NICKNAME_MAP = {
     "BARCELONA F": "BARCELONA FEMENI", "LYONNES F": "OLYMPIQUE LYONNAIS",
     "CHELSEA F": "CHELSEA WOMEN", "BAYERN F": "BAYERN MUNICH WOMEN",
     "WOLFSBURGO F": "WOLFSBURG WOMEN", "PSG F": "PARIS SAINT-GERMAIN WOMEN",
+    # National teams: quinielaposible.com uses Spanish country names.
+    "MEXICO": "MEXICO", "E.U.A.": "USA", "ESTADOS UNIDOS": "USA",
+    "BRASIL": "BRAZIL", "NORUEGA": "NORWAY", "SUECIA": "SWEDEN",
+    "JAPON": "JAPAN", "ISLANDIA": "ICELAND", "CHEQUIA": "CZECH REPUBLIC",
+    "ALEMANIA": "GERMANY", "FRANCIA": "FRANCE", "INGLATERRA": "ENGLAND",
+    "HOLANDA": "NETHERLANDS", "PAISES BAJOS": "NETHERLANDS",
+    "ESCOCIA": "SCOTLAND", "GALES": "WALES", "IRLANDA": "IRELAND",
+    "DINAMARCA": "DENMARK", "SUIZA": "SWITZERLAND", "BELGICA": "BELGIUM",
+    "AUSTRIA": "AUSTRIA", "CROACIA": "CROATIA", "SERBIA": "SERBIA",
+    "TURQUIA": "TURKEY", "GRECIA": "GREECE", "RUMANIA": "ROMANIA",
+    "HUNGRIA": "HUNGARY", "POLONIA": "POLAND", "COREA SUR": "SOUTH KOREA",
+    "COREA DEL SUR": "SOUTH KOREA", "CHINA": "CHINA",
+    "COLOMBIA": "COLOMBIA", "ARGENTINA": "ARGENTINA", "CHILE": "CHILE",
+    "PERU": "PERU", "URUGUAY": "URUGUAY", "PARAGUAY": "PARAGUAY",
+    "VENEZUELA": "VENEZUELA", "BOLIVIA": "BOLIVIA", "ECUADOR": "ECUADOR",
+    "PANAMA": "PANAMA", "COSTA RICA": "COSTA RICA",
+    "A. SAUDITA": "SAUDI ARABIA", "ARABIA SAUDITA": "SAUDI ARABIA",
+    "MARRUECOS": "MOROCCO", "TUNEZ": "TUNISIA", "ARGELIA": "ALGERIA",
+    "SENEGAL": "SENEGAL", "CAMERUN": "CAMEROON", "NIGERIA": "NIGERIA",
+    "GHANA": "GHANA", "COSTA MARFIL": "IVORY COAST",
+    "AUSTRALIA": "AUSTRALIA", "NUEVA ZELANDA": "NEW ZEALAND",
+    "CANADA": "CANADA", "JAMAICA": "JAMAICA", "HONDURAS": "HONDURAS",
+    "EL SALVADOR": "EL SALVADOR", "GUATEMALA": "GUATEMALA",
+    "KOSOVO": "KOSOVO", "ESLOVENIA": "SLOVENIA", "ESLOVAQUIA": "SLOVAKIA",
+    "PORTUGAL": "PORTUGAL", "ITALIA": "ITALY", "ESPAÑA": "SPAIN",
+    # Brazil Serie B: site truncates club names.
+    "AVAI": "AVAI FC", "CRICIUMA": "CRICIUMA", "ATL. GO": "ATLETICO GOIANIENSE",
+    "GOIAS": "GOIAS", "VITORIA BA": "VITORIA",
+    # Swedish Allsvenskan: site truncates heavily.
+    "DEGERFORS": "DEGERFORS IF", "BROMMAPOJ": "BROMMAPOJKARNA",
 }
 
 def clean_name(name):
@@ -117,13 +147,14 @@ def scrape_flexible_slate(url):
         return []
 
 
-def get_upcoming_api_fixtures(days_back=3, days_forward=8):
+def get_upcoming_api_fixtures(days_back=3, days_forward=12):
     """Fetch fixtures in a date window (played + unplayed). The previous version
     used `next=50` which silently dropped fixtures that had already kicked off,
     leaving the slate resolver with <21 matches by Saturday afternoon.
 
-    days_forward=8 (was 5): Progol slates span ~10 days; a narrow window
-    missed fixtures scheduled late in the round (MLS midweek, etc.).
+    days_forward=12 (was 5→8→12): Progol slates can span up to ~2 weeks
+    (friendlies, cup finals). 12 days from the Wednesday run covers through
+    the following Sunday+Monday comfortably.
     days_back=3 (was 2): some Friday fixtures are already FT by the
     Wednesday run — widen to catch them for resolution."""
     headers = {"x-apisports-key": API_KEY}
@@ -167,6 +198,12 @@ def get_upcoming_api_fixtures(days_back=3, days_forward=8):
         143,  # Copa del Rey
         # Women's competitions
         750,  # Women's Champions League (UWCL)
+        # International
+        10,   # Friendlies (international)
+        # Additional domestic leagues that appear in Progol slates
+        72,   # Brazil Serie B
+        113,  # Swedish Allsvenskan
+        114,  # Swedish Superettan
     ]
     all_f = []
     for lid in leagues:
