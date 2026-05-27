@@ -37,6 +37,9 @@ NICKNAME_MAP = {
     # MLS short forms used on quinielaposible.com.
     "NY R. BULLS": "NEW YORK RED BULLS", "NY CITY": "NEW YORK CITY",
     "HOUSTON": "HOUSTON DYNAMO", "VANCOUVER": "VANCOUVER WHITECAPS",
+    "MINNESOTA": "MINNESOTA UNITED", "SALT LAKE": "REAL SALT LAKE",
+    "SAN DIEGO": "SAN DIEGO FC", "CHARLOTTE": "CHARLOTTE FC",
+    "NEW ENGLAND": "NEW ENGLAND REVOLUTION", "TORONTO": "TORONTO FC",
     # Premier League — Man City missing in the existing list.
     "MAN. CITY": "MANCHESTER CITY",
     # Belgian Jupiler League: site uses Spanish/short forms.
@@ -45,6 +48,20 @@ NICKNAME_MAP = {
     "HEARTS": "HEART OF MIDLOTHIAN",
     # Russian Premier League: site uses club-only; API uses "<club> Moscow" etc.
     "CSKA": "CSKA MOSCOW", "LOKOMOTIV": "LOKOMOTIV MOSCOW",
+    "SPARTAK": "SPARTAK MOSCOW", "KRASNODAR": "FC KRASNODAR",
+    # Chilean Primera: quinielaposible.com uses short-form university names.
+    "U. CATOLICA": "UNIVERSIDAD CATOLICA", "U. DE CHILE": "UNIVERSIDAD DE CHILE",
+    # J-League (Japan): site truncates to ~11 chars.
+    "CEREZO OSAK": "CEREZO OSAKA", "GAMBA OSAK": "GAMBA OSAKA",
+    "SHIMIZU": "SHIMIZU S-PULSE", "OKAYAMA": "FAGIANO OKAYAMA",
+    "KASHIMA": "KASHIMA ANTLERS", "URAWA": "URAWA RED DIAMONDS",
+    "YOKOHAMA FM": "YOKOHAMA F. MARINOS", "NAGOYA": "NAGOYA GRAMPUS",
+    "SAPPORO": "HOKKAIDO CONSADOLE SAPPORO", "KAWASAKI": "KAWASAKI FRONTALE",
+    "SANFRECCE": "SANFRECCE HIROSHIMA",
+    # Women's football: site appends " F" suffix.
+    "BARCELONA F": "BARCELONA FEMENI", "LYONNES F": "OLYMPIQUE LYONNAIS",
+    "CHELSEA F": "CHELSEA WOMEN", "BAYERN F": "BAYERN MUNICH WOMEN",
+    "WOLFSBURGO F": "WOLFSBURG WOMEN", "PSG F": "PARIS SAINT-GERMAIN WOMEN",
 }
 
 def clean_name(name):
@@ -100,21 +117,57 @@ def scrape_flexible_slate(url):
         return []
 
 
-def get_upcoming_api_fixtures(days_back=2, days_forward=5):
+def get_upcoming_api_fixtures(days_back=3, days_forward=8):
     """Fetch fixtures in a date window (played + unplayed). The previous version
     used `next=50` which silently dropped fixtures that had already kicked off,
-    leaving the slate resolver with <21 matches by Saturday afternoon."""
+    leaving the slate resolver with <21 matches by Saturday afternoon.
+
+    days_forward=8 (was 5): Progol slates span ~10 days; a narrow window
+    missed fixtures scheduled late in the round (MLS midweek, etc.).
+    days_back=3 (was 2): some Friday fixtures are already FT by the
+    Wednesday run — widen to catch them for resolution."""
     headers = {"x-apisports-key": API_KEY}
     today = datetime.now().date()
     date_from = (today - timedelta(days=days_back)).isoformat()
     date_to = (today + timedelta(days=days_forward)).isoformat()
-    # Liga MX, Premier, La Liga, Serie A, Bundesliga, Ligue 1, MLS, Brasil, Argentina,
-    # Portugal, Eredivisie, Belgium, Championship, La Liga 2, Libertadores, UCL, UEL,
-    # Greek Super League, Bundesliga 2, Liga MX Expansion, Scottish Premiership,
-    # Russian Premier League, Sudamericana, FA Cup, EFL Cup, Coupe de France,
-    # DFB-Pokal, Coppa Italia, Copa del Rey.
-    leagues = [262, 39, 140, 135, 78, 61, 253, 71, 128, 94, 88, 144, 40, 141, 13, 2, 3, 197, 79, 263, 179, 235,
-               11, 45, 48, 66, 81, 137, 143]
+    leagues = [
+        # Domestic leagues
+        262,  # Liga MX
+        39,   # Premier League
+        140,  # La Liga
+        135,  # Serie A
+        78,   # Bundesliga
+        61,   # Ligue 1
+        253,  # MLS
+        71,   # Brazil Serie A
+        128,  # Argentina Primera
+        94,   # Portugal Primeira Liga
+        88,   # Eredivisie
+        144,  # Belgium Jupiler
+        40,   # Championship
+        141,  # La Liga 2
+        197,  # Greek Super League
+        79,   # Bundesliga 2
+        263,  # Liga MX Expansion
+        179,  # Scottish Premiership
+        235,  # Russian Premier League
+        265,  # Chilean Primera División
+        98,   # J1 League (Japan)
+        99,   # J2 League (Japan)
+        # Cup competitions
+        13,   # Copa Libertadores
+        2,    # UEFA Champions League
+        3,    # UEFA Europa League
+        11,   # Copa Sudamericana
+        45,   # FA Cup
+        48,   # EFL Cup
+        66,   # Coupe de France
+        81,   # DFB-Pokal
+        137,  # Coppa Italia
+        143,  # Copa del Rey
+        # Women's competitions
+        750,  # Women's Champions League (UWCL)
+    ]
     all_f = []
     for lid in leagues:
         for sn in [2025, 2026]:
@@ -128,7 +181,7 @@ def get_upcoming_api_fixtures(days_back=2, days_forward=5):
     logging.info(f"Fetched {len(all_f)} candidate fixtures in window {date_from} -> {date_to}")
     return all_f
 
-def resolve_matches(scraped, api_data, threshold=75):
+def resolve_matches(scraped, api_data, threshold=70):
     """Resolve scraped (home, away) pairs to API fixture IDs.
 
     Returns a list of dicts: {game_number, home_name, away_name, fixture_id, inverted}.
@@ -149,14 +202,21 @@ def resolve_matches(scraped, api_data, threshold=75):
 
         fid = None
         inverted = False
+        best = max(fwd_score, rev_score)
         if fwd_score >= threshold and fwd_score >= rev_score:
             fid, inverted, score = fwd_map[fwd_match], False, fwd_score
-            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score})")
+            tag = " [LOW-CONFIDENCE]" if score < 75 else ""
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score}){tag}")
+            if score < 75:
+                logging.warning(f"low_confidence_match game={i+1} {h} vs {v} score={score} matched={fwd_match}")
         elif rev_score >= threshold:
             fid, inverted, score = rev_map[rev_match], True, rev_score
-            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score})  [INVERTED - L/V swapped]")
+            tag = " [LOW-CONFIDENCE]" if score < 75 else ""
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> ID {fid} (score {score})  [INVERTED]{tag}")
+            if score < 75:
+                logging.warning(f"low_confidence_match game={i+1} {h} vs {v} score={score} matched={rev_match} inverted")
         else:
-            print(f"Game {i+1:2}: {h:15} vs {v:15} -> FAILED (best score: {max(fwd_score, rev_score)})")
+            print(f"Game {i+1:2}: {h:15} vs {v:15} -> FAILED (best score: {best})")
 
         games.append({
             'game_number': i + 1,

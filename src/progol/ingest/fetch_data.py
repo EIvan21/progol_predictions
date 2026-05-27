@@ -29,6 +29,7 @@ else:
         # inference.
         "Belgium Jupiler": 144, "La Liga 2": 141, "Greek Super League": 197,
         "Bundesliga 2": 79, "Scottish Premiership": 179,
+        "Chilean Primera": 265, "J1 League": 98, "J2 League": 99,
         # Cup competitions. Each match is flagged via the `is_cup` feature
         # (config.CUP_LEAGUE_IDS) so the model can learn cup-specific
         # patterns (knock-out pressure, mixed-tier opponents, lineup
