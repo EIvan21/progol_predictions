@@ -198,7 +198,8 @@ def get_upcoming_api_fixtures(days_back=3, days_forward=12):
         143,  # Copa del Rey
         # Women's competitions
         750,  # Women's Champions League (UWCL)
-        # International
+        # CONCACAF / International
+        16,   # CONCACAF Champions Cup (Concachampions)
         10,   # Friendlies (international)
         # Additional domestic leagues that appear in Progol slates
         72,   # Brazil Serie B

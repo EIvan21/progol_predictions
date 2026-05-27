@@ -36,6 +36,7 @@ else:
         # patterns (knock-out pressure, mixed-tier opponents, lineup
         # rotation) while still sharing league-side history per club.
         "UEFA Champions League": 2, "UEFA Europa League": 3,
+        "CONCACAF Champions Cup": 16,
         "Copa Libertadores": 13, "Copa Sudamericana": 11,
         "FA Cup": 45, "EFL Cup": 48,
         "Copa del Rey": 143, "DFB-Pokal": 81,
