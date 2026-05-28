@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gsutil ls *)",
+      "Bash(gcloud compute *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git)",
+      "Bash(gsutil)",
+      "Read(//tmp/**)",
+      "Bash(git *)",
+      "Bash(gsutil *)",
+      "Bash(python *)",
+      "Bash(gcloud storage *)"
+    ]
+  }
+}

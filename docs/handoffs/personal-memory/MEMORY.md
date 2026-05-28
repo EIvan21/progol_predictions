@@ -1,0 +1,7 @@
+- [progol-trainer VM provisioning](project_progol_trainer_vm.md) — Spot preemption silently truncated runs; now STANDARD.
+- [progol-bot VM provisioning](project_progol_bot_vm.md) — Slim deps + DB auth (bot_users) + manage_users CLI + run from /opt cwd.
+- [GCS bucket layout](reference_gcs_bucket.md) — `gs://progol-data-storage` prefixes and the dual-auth (gsutil works, python google-auth fails on mTLS).
+- [Bot data sync](project_bot_data_sync.md) — Only /predecir_progol syncs; other commands hit on-disk DB/predictions.
+- [Windows SSL trust](reference_workstation_ssl.md) — gcloud uses certifi bundle (with disable_ssl_validation fallback); git uses http.sslVerify=false.
+- [Batches A-E complete](project_batches_complete.md) — 15 of 16 shipped; +8.7pp WF accuracy vs `baseline-pre-batches`; what's deferred and why.
+- [Concurso 2333 plan (May 25-28)](project_concurso_2333_plan.md) — 4-day plan to diagnose+fix the silent partial-write (15/21 picks shipped 2026-05-15).
