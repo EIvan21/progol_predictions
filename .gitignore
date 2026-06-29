@@ -34,3 +34,5 @@ reports/
 .idea/
 catboost_info/
 
+# Claude Code handoff transcripts (may contain secrets dumped from .env)
+docs/handoffs/*transcript*
