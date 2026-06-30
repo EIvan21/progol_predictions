@@ -133,9 +133,12 @@ def top_scores(M: np.ndarray, n: int = 10) -> pd.DataFrame:
 # Trains/retrains on accumulating results — the more matches settle, the more
 # the regressors learn.
 
+_FORM_DEFAULT = (1.0, 1.0, 1.0, 1.0, 1.0, 1.0)  # form5/gf5/ga5, form10/gf10/ga10
+
+
 def _long_form(df: pd.DataFrame, since: str):
-    """Per-team rolling (last-5) points/goals form, plus each team's latest
-    available form (for predicting future fixtures)."""
+    """Per-team rolling points/goals form over the last 5 and 10 matches, plus
+    each team's latest available form (for predicting future fixtures)."""
     sub = df[df["date"] >= pd.Timestamp(since)]
     rows = []
     for r in sub.itertuples():
@@ -144,24 +147,33 @@ def _long_form(df: pd.DataFrame, since: str):
     L = pd.DataFrame(rows, columns=["date", "team", "gf", "ga", "ishome"]).sort_values("date")
     L["pts"] = np.where(L.gf > L.ga, 3, np.where(L.gf == L.ga, 1, 0))
     g = L.groupby("team")
-    L["form5"] = g["pts"].transform(lambda s: s.shift().rolling(5, min_periods=1).mean())
-    L["gf5"] = g["gf"].transform(lambda s: s.shift().rolling(5, min_periods=1).mean())
-    L["ga5"] = g["ga"].transform(lambda s: s.shift().rolling(5, min_periods=1).mean())
-    by_row = {(r.date, r.team, r.ishome): (r.form5, r.gf5, r.ga5) for r in L.itertuples()}
+    for w in (5, 10):
+        L[f"form{w}"] = g["pts"].transform(lambda s: s.shift().rolling(w, min_periods=1).mean())
+        L[f"gf{w}"] = g["gf"].transform(lambda s: s.shift().rolling(w, min_periods=1).mean())
+        L[f"ga{w}"] = g["ga"].transform(lambda s: s.shift().rolling(w, min_periods=1).mean())
+    cols = ["form5", "gf5", "ga5", "form10", "gf10", "ga10"]
+    by_row = {(r.date, r.team, r.ishome): tuple(getattr(r, c) for c in cols) for r in L.itertuples()}
     latest = {}
     for r in L.itertuples():  # sorted by date, so last write per (team,ishome) wins
-        if not (pd.isna(r.form5) or pd.isna(r.gf5) or pd.isna(r.ga5)):
-            latest[(r.team, r.ishome)] = (r.form5, r.gf5, r.ga5)
+        vals = tuple(getattr(r, c) for c in cols)
+        if not any(pd.isna(v) for v in vals):
+            latest[(r.team, r.ishome)] = vals
     return by_row, latest
 
 
-def _feature_row(dc: dict, home: str, away: str, host: float, fh, fa):
+def _feature_row(dc: dict, home: str, away: str, host: float, fh, fa, competitive: float):
     att, dfn = dc["att"], dc["dfn"]
     ih, ia = dc["idx"][home], dc["idx"][away]
     lam = np.exp(att[ih] - dfn[ia] + dc["home"] * host)
     mu = np.exp(att[ia] - dfn[ih])
-    return [lam, mu, att[ih] - att[ia], dfn[ih] - dfn[ia], float(host),
-            fh[0], fh[1], fh[2], fa[0], fa[1], fa[2]]
+    return [lam, mu, att[ih] - att[ia], dfn[ih] - dfn[ia], float(host), float(competitive),
+            *fh, *fa]
+
+
+def _is_competitive(row, has_tournament: bool) -> float:
+    if not has_tournament:
+        return 1.0
+    return 0.0 if str(getattr(row, "tournament", "")).lower() == "friendly" else 1.0
 
 
 def fit_goal_regressors(df: pd.DataFrame, dc: dict = None, cutoff=None,
@@ -176,22 +188,25 @@ def fit_goal_regressors(df: pd.DataFrame, dc: dict = None, cutoff=None,
         dc = fit_dixon_coles(df, cutoff=cutoff, since=since)
     by_row, latest = _long_form(train, since)
     known = dc["idx"]
+    has_tournament = "tournament" in train.columns
 
     X, yh, ya = [], [], []
     for r in train.itertuples():
         if r.home_team not in known or r.away_team not in known:
             continue
         host = 0.0 if r.neutral else 1.0
-        fh = by_row.get((r.date, r.home_team, 1), (1.0, 1.0, 1.0))
-        fa = by_row.get((r.date, r.away_team, 0), (1.0, 1.0, 1.0))
-        feat = _feature_row(dc, r.home_team, r.away_team, host, fh, fa)
+        fh = by_row.get((r.date, r.home_team, 1), _FORM_DEFAULT)
+        fa = by_row.get((r.date, r.away_team, 0), _FORM_DEFAULT)
+        feat = _feature_row(dc, r.home_team, r.away_team, host, fh, fa,
+                            _is_competitive(r, has_tournament))
         if any(pd.isna(feat)):
             continue
         X.append(feat); yh.append(r.home_score); ya.append(r.away_score)
     X = np.array(X); yh = np.array(yh); ya = np.array(ya)
 
-    params = dict(objective="count:poisson", n_estimators=300, max_depth=4,
-                  learning_rate=0.05, subsample=0.8, colsample_bytree=0.8, random_state=42)
+    params = dict(objective="count:poisson", n_estimators=400, max_depth=4,
+                  learning_rate=0.04, subsample=0.8, colsample_bytree=0.8,
+                  min_child_weight=3, reg_lambda=1.5, random_state=42)
     reg_home = xgb.XGBRegressor(**params).fit(X, yh)
     reg_away = xgb.XGBRegressor(**params).fit(X, ya)
     logger.info("fit xgb goal regressors on %d matches", len(X))
@@ -200,12 +215,13 @@ def fit_goal_regressors(df: pd.DataFrame, dc: dict = None, cutoff=None,
 
 
 def score_matrix_xgb(model: dict, home: str, away: str, neutral: bool = False,
-                     max_goals: int = 7) -> np.ndarray:
+                     competitive: bool = True, max_goals: int = 7) -> np.ndarray:
     dc = model["dc"]
     host = 0.0 if neutral else 1.0
-    fh = model["latest_form"].get((home, 1), (1.0, 1.0, 1.0))
-    fa = model["latest_form"].get((away, 0), (1.0, 1.0, 1.0))
-    feat = np.array(_feature_row(dc, home, away, host, fh, fa), dtype=float).reshape(1, -1)
+    fh = model["latest_form"].get((home, 1), _FORM_DEFAULT)
+    fa = model["latest_form"].get((away, 0), _FORM_DEFAULT)
+    feat = np.array(_feature_row(dc, home, away, host, fh, fa, 1.0 if competitive else 0.0),
+                    dtype=float).reshape(1, -1)
     lam = float(model["reg_home"].predict(feat)[0])
     mu = float(model["reg_away"].predict(feat)[0])
     M = np.outer(poisson.pmf(np.arange(max_goals), lam),
