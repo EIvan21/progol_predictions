@@ -49,6 +49,8 @@ def _make_synthetic_matches(n_teams: int = 12, n_matches: int = 400, seed: int =
             'h2h_home_wins': int(rng.integers(0, 5)),
             'h2h_draws': int(rng.integers(0, 3)),
             'h2h_away_wins': int(rng.integers(0, 5)),
+            'home_injuries': int(rng.integers(0, 5)),
+            'away_injuries': int(rng.integers(0, 5)),
         })
     return pd.DataFrame(rows)
 
