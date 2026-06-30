@@ -87,6 +87,10 @@ NICKNAME_MAP = {
     "EL SALVADOR": "EL SALVADOR", "GUATEMALA": "GUATEMALA",
     "KOSOVO": "KOSOVO", "ESLOVENIA": "SLOVENIA", "ESLOVAQUIA": "SLOVAKIA",
     "PORTUGAL": "PORTUGAL", "ITALIA": "ITALY", "ESPAÑA": "SPAIN",
+    # 2026 World Cup slate names absent from the country list above; API
+    # uses these exact long forms, so map to them for the fuzzy match.
+    "EGIPTO": "EGYPT", "CABO VERDE": "CAPE VERDE ISLANDS",
+    "BOSNIA": "BOSNIA & HERZEGOVINA", "REP. CONGO": "CONGO DR",
     # Brazil Serie B: site truncates club names.
     "AVAI": "AVAI FC", "CRICIUMA": "CRICIUMA", "ATL. GO": "ATLETICO GOIANIENSE",
     "GOIAS": "GOIAS", "VITORIA BA": "VITORIA",
@@ -201,6 +205,7 @@ def get_upcoming_api_fixtures(days_back=3, days_forward=12):
         # CONCACAF / International
         16,   # CONCACAF Champions Cup (Concachampions)
         10,   # Friendlies (international)
+        1,    # FIFA World Cup — national-team slates (e.g. concurso 2339)
         # Additional domestic leagues that appear in Progol slates
         72,   # Brazil Serie B
         113,  # Swedish Allsvenskan
