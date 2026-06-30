@@ -28,6 +28,14 @@ BEST_PARAMS_PATH = MODEL_DIR / "best_params.json"
 LATEST_POINTER_PATH = MODEL_DIR / "latest.json"
 PROGOL_IDS_PATH = DATA_DIR / "current_progol_ids.json"
 
+# Exact-score model (Dixon-Coles) inputs/outputs. National-team history is not
+# in progol.db (only club leagues are fetched for the 1X2 model), so the score
+# model fits on the public martj42/international_results dataset instead.
+INTL_RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_results/master/results.csv"
+INTL_RESULTS_PATH = DATA_DIR / "international_results.csv"
+SCORE_MAPS_DIR = REPORT_DIR / "score_maps"
+SCORE_REPORT_PDF = REPORT_DIR / "score_report.pdf"
+
 # venue (stadium name) is ~99% redundant with home_team_id since each club
 # plays home games at one stadium. Switching to home_id lets TargetEncoder
 # learn cleaner per-club home-advantage patterns instead of duplicating the

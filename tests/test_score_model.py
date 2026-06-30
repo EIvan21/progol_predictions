@@ -1,0 +1,56 @@
+import numpy as np
+import pandas as pd
+import pytest
+
+from src.progol.modeling import score_model as sm
+
+
+@pytest.fixture
+def fitted_model():
+    # Synthetic international history: STRONG beats everyone, WEAK loses.
+    rng = np.random.default_rng(0)
+    teams = ["STRONG", "MID1", "MID2", "WEAK"]
+    base_gf = {"STRONG": 2.4, "MID1": 1.3, "MID2": 1.2, "WEAK": 0.6}
+    rows, date = [], pd.Timestamp("2020-01-01")
+    for i in range(240):
+        h, a = rng.choice(teams, size=2, replace=False)
+        rows.append({
+            "date": date + pd.Timedelta(days=i * 3),
+            "home_team": h, "away_team": a,
+            "home_score": int(rng.poisson(base_gf[h])),
+            "away_score": int(rng.poisson(base_gf[a])),
+            "neutral": False,
+        })
+    return sm.fit_dixon_coles(pd.DataFrame(rows), half_life=3650)
+
+
+def test_score_matrix_is_a_distribution(fitted_model):
+    M = sm.score_matrix(fitted_model, "STRONG", "WEAK", neutral=True)
+    assert M.shape == (7, 7)
+    assert M.min() >= 0
+    assert M.sum() == pytest.approx(1.0)
+
+
+def test_outcome_probs_sum_to_one(fitted_model):
+    M = sm.score_matrix(fitted_model, "MID1", "MID2")
+    pH, pD, pA = sm.outcome_probs(M)
+    assert pH + pD + pA == pytest.approx(1.0)
+
+
+def test_favourite_beats_underdog(fitted_model):
+    M = sm.score_matrix(fitted_model, "STRONG", "WEAK", neutral=True)
+    pH, _, pA = sm.outcome_probs(M)
+    assert pH > pA
+
+
+def test_top_scores_sorted_and_capped(fitted_model):
+    M = sm.score_matrix(fitted_model, "STRONG", "WEAK")
+    top = sm.top_scores(M, 5)
+    assert len(top) == 5
+    assert list(top["prob"]) == sorted(top["prob"], reverse=True)
+
+
+def test_resolve_team_uses_name_map(fitted_model):
+    # Exact + fuzzy fall through to None for genuine unknowns.
+    assert sm.resolve_team("STRONG", fitted_model) == "STRONG"
+    assert sm.resolve_team("Atlantis", fitted_model) is None
