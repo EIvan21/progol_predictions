@@ -63,6 +63,7 @@ HELP_TEXT = (
     "/predecir_partido EQUIPO_A vs EQUIPO_B — predice un partido del concurso o cualquier fixture en los próximos 7 días\n"
     "\n<b>Análisis</b>\n"
     "/presupuesto — plan óptimo de dobles/triples para tu presupuesto\n"
+    "/marcadores — mapas de marcador exacto (heatmap) del concurso actual\n"
     "/historial — hits/14 + revancha de los últimos 8 concursos\n"
     "/cancelar — aborta una conversación en curso\n"
     "\n<b>Cuenta</b>\n"
@@ -274,6 +275,32 @@ async def cmd_historial(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_progol_history(rows), parse_mode='HTML'
     )
+
+
+async def cmd_marcadores(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """Relay the pre-generated exact-score maps (PNGs) from GCS. The maps are
+    built by the weekly trainer run (the bot is slim and can't render them)."""
+    await update.message.reply_text("Sincronizando mapas de marcador...")
+    bucket = os.getenv('GCS_BUCKET', 'progol-data-storage')
+    config.SCORE_MAPS_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        subprocess.run(['gsutil', '-m', 'rsync', '-r',
+                        f"gs://{bucket}/reports/score_maps", str(config.SCORE_MAPS_DIR)],
+                       capture_output=True, text=True, timeout=120)
+    except Exception as exc:
+        logger.warning(f"score_maps sync failed: {exc}")
+    pngs = sorted(config.SCORE_MAPS_DIR.glob("*.png"))
+    if not pngs:
+        await update.message.reply_text(
+            "No hay mapas disponibles todavía; se generan en la corrida semanal.")
+        return
+    await update.message.reply_text(f"Enviando {len(pngs)} mapas de marcador...")
+    for png in pngs:
+        try:
+            with open(png, 'rb') as f:
+                await update.message.reply_photo(f, caption=png.stem.replace("_", " "))
+        except Exception as exc:
+            logger.warning(f"send score map {png.name} failed: {exc}")
 
 
 async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -519,6 +546,7 @@ def main():
     app.add_handler(CommandHandler('predecir_progol', user_g(cmd_predecir_progol)))
     app.add_handler(CommandHandler('predecir_partido', user_g(cmd_predecir_partido)))
     app.add_handler(CommandHandler('historial', user_g(cmd_historial)))
+    app.add_handler(CommandHandler('marcadores', user_g(cmd_marcadores)))
 
     # /presupuesto conversation. Entry is guarded; the state handler doesn't
     # need its own guard since it's only reachable after entry succeeds.

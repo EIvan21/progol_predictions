@@ -13,6 +13,11 @@ WORK_DIR="/opt/progol_predictions"
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip git curl
 
+# The repo is chowned to the progol-bot user below, but this script runs as
+# root — without this exception git aborts with "dubious ownership" and
+# `set -e` kills the whole boot (stale .env -> bot starts on a revoked token).
+git config --global --add safe.directory "$WORK_DIR"
+
 if [ ! -d "$WORK_DIR/.git" ]; then
   git clone "$REPO_URL" "$WORK_DIR"
 else
