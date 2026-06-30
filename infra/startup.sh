@@ -110,4 +110,13 @@ else
   echo "telegram skipped: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set"
 fi
 
+# Exact-score maps (Dixon-Coles): one 3-panel figure per national-team fixture,
+# written to reports/score_maps + a combined PDF (synced to GCS by finalize),
+# and pushed to Telegram when configured. Non-fatal — informational, not a gate.
+if [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && [ -n "${TELEGRAM_CHAT_ID:-}" ]; then
+  python -m src.progol.reporting.score_report --telegram || echo "score report failed"
+else
+  python -m src.progol.reporting.score_report || echo "score report failed"
+fi
+
 # Uploads + shutdown happen in the EXIT trap (finalize) defined above.

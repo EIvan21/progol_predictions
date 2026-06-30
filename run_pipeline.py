@@ -71,6 +71,7 @@ def main():
         ("src.progol.reporting.generate_report", "Generating training summary", None, False),
         ("src.progol.ingest.get_progol_ids", "Scraping Progol slate", None, True),
         ("src.progol.modeling.predict", "Final predictions", None, True),
+        ("src.progol.reporting.score_report", "Generating exact-score maps", None, False),
     ]
 
     for module, desc, args, required in steps:

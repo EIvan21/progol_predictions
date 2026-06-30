@@ -26,6 +26,17 @@ logger = logging.getLogger(__name__)
 C_HOME, C_DRAW, C_AWAY = "#1b7a3d", "#9e9e9e", "#c0392b"
 # World Cup fixtures are at neutral venues; no home advantage by default.
 NEUTRAL_DEFAULT = True
+# Exception: the WC 2026 co-hosts keep home advantage when listed as home.
+# Names are slate (API-Football English) spellings.
+HOST_NATIONS = {"Mexico", "USA", "Canada"}
+
+
+def _fixture_neutral(home: str, default_neutral: bool) -> bool:
+    """In neutral (World Cup) mode, host nations playing at home keep their
+    home advantage; everyone else is neutral."""
+    if not default_neutral:
+        return False
+    return home not in HOST_NATIONS
 
 
 def _abbr(name: str) -> str:
@@ -106,6 +117,8 @@ def _send_photo(token, chat_id, path, caption):
 
 
 def run(neutral: bool = NEUTRAL_DEFAULT, to_telegram: bool = False) -> list:
+    from dotenv import load_dotenv
+    load_dotenv()
     concurso, matchups = _load_matchups()
     config.SCORE_MAPS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -129,8 +142,9 @@ def run(neutral: bool = NEUTRAL_DEFAULT, to_telegram: bool = False) -> list:
             if rh is None or ra is None:
                 logger.warning("skipping %s vs %s (not a national team in dataset)", home, away)
                 continue
-            M = sm.score_matrix(model, rh, ra, neutral=neutral)
-            fig = _plot_panel(M, home, away, concurso, neutral)
+            fx_neutral = _fixture_neutral(home, neutral)
+            M = sm.score_matrix(model, rh, ra, neutral=fx_neutral)
+            fig = _plot_panel(M, home, away, concurso, fx_neutral)
             png = config.SCORE_MAPS_DIR / f"{home}_vs_{away}.png".replace(" ", "_")
             fig.savefig(png, dpi=150, bbox_inches="tight")
             pdf.savefig(fig)
