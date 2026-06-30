@@ -94,3 +94,14 @@ def test_evaluate_reports_both_backends(intl_df):
     for tag in ("dc", "xgb"):
         assert 0.0 <= res[tag]["accuracy"] <= 1.0
         assert res[tag]["log_loss"] > 0
+
+
+def test_score_eval_appends_history(intl_df, tmp_path):
+    from src.progol.reporting import score_eval
+    path = tmp_path / "score_model_history.csv"
+    r1 = score_eval.run(df=intl_df, test_since="2021-06-01", history_path=path)
+    assert path.exists() and r1["n_test"] > 0
+    score_eval.run(df=intl_df, test_since="2021-06-01", history_path=path)
+    lines = path.read_text().strip().splitlines()
+    assert lines[0].startswith("date,")  # header once
+    assert len(lines) == 3              # header + two appended rows

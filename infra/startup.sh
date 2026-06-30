@@ -119,4 +119,8 @@ else
   python -m src.progol.reporting.score_report || echo "score report failed"
 fi
 
+# Track exact-score model accuracy over time (temporal-holdout 1X2 acc +
+# log-loss for both backends) -> reports/score_model_history.csv. Non-fatal.
+python -m src.progol.reporting.score_eval || echo "score eval skipped"
+
 # Uploads + shutdown happen in the EXIT trap (finalize) defined above.

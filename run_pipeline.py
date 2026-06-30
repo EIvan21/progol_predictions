@@ -72,6 +72,7 @@ def main():
         ("src.progol.ingest.get_progol_ids", "Scraping Progol slate", None, True),
         ("src.progol.modeling.predict", "Final predictions", None, True),
         ("src.progol.reporting.score_report", "Generating exact-score maps", None, False),
+        ("src.progol.reporting.score_eval", "Tracking score-model accuracy", None, False),
     ]
 
     for module, desc, args, required in steps:
