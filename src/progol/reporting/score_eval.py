@@ -17,8 +17,9 @@ from src.progol.modeling import score_model as sm
 logger = logging.getLogger(__name__)
 
 HISTORY_CSV = config.REPORT_DIR / "score_model_history.csv"
-_FIELDS = ["date", "test_since", "n_test",
-           "dc_acc", "dc_logloss", "xgb_acc", "xgb_logloss"]
+_FIELDS = ["date", "test_since", "n_test", "blend_weight",
+           "dc_acc", "dc_logloss", "xgb_acc", "xgb_logloss",
+           "blend_acc", "blend_logloss"]
 
 
 def run(df: pd.DataFrame = None, test_since: str = None, history_path=None) -> dict:
@@ -32,10 +33,13 @@ def run(df: pd.DataFrame = None, test_since: str = None, history_path=None) -> d
         "date": datetime.date.today().isoformat(),
         "test_since": test_since,
         "n_test": res["n_test"],
+        "blend_weight": res["blend_weight"],
         "dc_acc": round(res["dc"]["accuracy"], 4),
         "dc_logloss": round(res["dc"]["log_loss"], 4),
         "xgb_acc": round(res["xgb"]["accuracy"], 4),
         "xgb_logloss": round(res["xgb"]["log_loss"], 4),
+        "blend_acc": round(res["blend"]["accuracy"], 4),
+        "blend_logloss": round(res["blend"]["log_loss"], 4),
     }
     path = history_path or HISTORY_CSV
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -45,9 +49,8 @@ def run(df: pd.DataFrame = None, test_since: str = None, history_path=None) -> d
         if new:
             w.writeheader()
         w.writerow(row)
-    logger.info("score_model_eval n=%d DC acc=%.3f ll=%.3f | XGB acc=%.3f ll=%.3f",
-                row["n_test"], row["dc_acc"], row["dc_logloss"],
-                row["xgb_acc"], row["xgb_logloss"])
+    logger.info("score_model_eval n=%d DC ll=%.3f | XGB ll=%.3f | BLEND ll=%.3f",
+                row["n_test"], row["dc_logloss"], row["xgb_logloss"], row["blend_logloss"])
     return row
 
 

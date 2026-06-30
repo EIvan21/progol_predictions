@@ -10,6 +10,7 @@ import argparse
 import json
 import logging
 import os
+import time
 
 import matplotlib
 matplotlib.use("Agg")
@@ -126,16 +127,57 @@ def _send_photo(token, chat_id, path, caption):
         logger.warning("telegram sendPhoto failed for %s: %s", path, r.text[:200])
 
 
+def _fit_system(df, backend):
+    """A score 'system' = the Dixon-Coles fit + (optionally) the XGBoost fit."""
+    dc = sm.fit_dixon_coles(df)
+    xgb = sm.fit_goal_regressors(df, dc=dc) if backend != "dc" else None
+    return {"dc": dc, "xgb": xgb}
+
+
+def _club_system(backend):
+    """Cached club system: the Dixon-Coles fit on ~600 clubs is slow, so reuse
+    a saved bundle unless it's stale, then refit + save."""
+    p = config.SCORE_CLUB_MODEL
+    if p.exists():
+        age_days = (time.time() - p.stat().st_mtime) / 86400
+        if age_days < config.SCORE_CLUB_MAX_AGE_DAYS:
+            try:
+                return sm.load_model(p)
+            except Exception as exc:
+                logger.warning("club model load failed (%s); refitting", exc)
+    logger.info("fitting club score system (this is slow ~2min)...")
+    system = _fit_system(sm.load_club_results(), backend)
+    try:
+        sm.save_model(system, p)
+    except Exception as exc:
+        logger.warning("club model save failed: %s", exc)
+    return system
+
+
+def _matrices(system, rh, ra, neutral, competitive, backend):
+    dc_M = sm.score_matrix(system["dc"], rh, ra, neutral=neutral)
+    xgb_M = None
+    if backend != "dc":
+        xgb_M = sm.score_matrix_xgb(system["xgb"], rh, ra, neutral=neutral, competitive=competitive)
+    out = []
+    if backend in ("dc", "both", "all"):
+        out.append(("Dixon-Coles", dc_M))
+    if backend in ("xgb", "both", "all"):
+        out.append(("XGBoost (ML)", xgb_M))
+    if backend in ("meta", "all"):
+        out.append(("Meta (DC+XGB)", sm.blend_matrices([dc_M, xgb_M])))
+    return out
+
+
 def run(neutral: bool = NEUTRAL_DEFAULT, to_telegram: bool = False,
-        backend: str = "both") -> list:
+        backend: str = "both", clubs: bool = True) -> list:
     from dotenv import load_dotenv
     load_dotenv()
     concurso, matchups = _load_matchups()
     config.SCORE_MAPS_DIR.mkdir(parents=True, exist_ok=True)
 
-    df = load_results()
-    dc = sm.fit_dixon_coles(df)
-    xgb = sm.fit_goal_regressors(df, dc=dc) if backend in ("xgb", "both") else None
+    national = _fit_system(load_results(), backend)
+    club = None  # lazy: only fit/load if the slate has a club fixture
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -151,17 +193,24 @@ def run(neutral: bool = NEUTRAL_DEFAULT, to_telegram: bool = False,
             if (home, away) in seen:
                 continue
             seen.add((home, away))
-            rh, ra = sm.resolve_team(home, dc), sm.resolve_team(away, dc)
-            if rh is None or ra is None:
-                logger.warning("skipping %s vs %s (not a national team in dataset)", home, away)
-                continue
-            fx_neutral = _fixture_neutral(home, neutral)
-            matrices = []
-            if backend in ("dc", "both"):
-                matrices.append(("Dixon-Coles", sm.score_matrix(dc, rh, ra, neutral=fx_neutral)))
-            if backend in ("xgb", "both"):
-                matrices.append(("XGBoost (ML)", sm.score_matrix_xgb(xgb, rh, ra, neutral=fx_neutral)))
 
+            rh, ra = sm.resolve_team(home, national["dc"]), sm.resolve_team(away, national["dc"])
+            if rh and ra:
+                system, fx_neutral, competitive = national, _fixture_neutral(home, neutral), True
+            elif clubs:
+                if club is None:
+                    club = _club_system(backend)
+                rh, ra = sm.resolve_team(home, club["dc"]), sm.resolve_team(away, club["dc"])
+                if rh and ra:
+                    system, fx_neutral, competitive = club, False, True
+                else:
+                    logger.warning("skipping %s vs %s (not in national or club data)", home, away)
+                    continue
+            else:
+                logger.warning("skipping %s vs %s (not a national team)", home, away)
+                continue
+
+            matrices = _matrices(system, rh, ra, fx_neutral, competitive, backend)
             fig = _make_figure(matrices, home, away, concurso, fx_neutral)
             png = config.SCORE_MAPS_DIR / f"{home}_vs_{away}.png".replace(" ", "_")
             fig.savefig(png, dpi=150, bbox_inches="tight")
@@ -185,8 +234,11 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--telegram", action="store_true", help="also push each map to Telegram")
     ap.add_argument("--home-away", action="store_true", help="use home advantage (default: neutral)")
-    ap.add_argument("--backend", choices=["dc", "xgb", "both"], default="both",
-                    help="score model(s) to render (default: both, side by side)")
+    ap.add_argument("--backend", choices=["dc", "xgb", "both", "meta", "all"], default="both",
+                    help="score model(s) to render: dc, xgb, both, meta (DC+XGB blend), all")
+    ap.add_argument("--no-clubs", action="store_true",
+                    help="skip club fixtures (national teams only; avoids the slow club fit)")
     args = ap.parse_args()
-    paths = run(neutral=not args.home_away, to_telegram=args.telegram, backend=args.backend)
+    paths = run(neutral=not args.home_away, to_telegram=args.telegram,
+                backend=args.backend, clubs=not args.no_clubs)
     print(f"Generated {len(paths)} score maps (backend={args.backend}). PDF: {config.SCORE_REPORT_PDF}")

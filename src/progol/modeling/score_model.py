@@ -233,33 +233,97 @@ def resolve_team_xgb(name: str, model: dict, threshold: int = 85):
     return resolve_team(name, model["dc"], threshold)
 
 
-def evaluate(df: pd.DataFrame, test_since: str, since: str = _DEFAULT_SINCE) -> dict:
-    """Temporal holdout: train both backends on matches in [since, test_since),
-    score the 1X2 outcome of every match on/after test_since, and report
-    accuracy + log-loss per backend. This is the metric to track over time as
-    the models retrain on accumulating results."""
+def load_club_results(since: str = "2021-01-01", min_matches: int = 20) -> pd.DataFrame:
+    """Club match history from progol.db (the score model's national-team
+    dataset has no clubs). Teams are named via the `teams` table so routing by
+    name works the same as for national teams. Drops teams with few matches to
+    keep the Dixon-Coles parameter count tractable."""
+    import sqlite3
+    from src.progol import config
+    con = sqlite3.connect(config.DB_PATH)
+    q = """SELECT m.date, th.name AS home_team, ta.name AS away_team,
+                  m.goals_home AS home_score, m.goals_away AS away_score
+           FROM matches m
+           JOIN teams th ON th.team_id = m.home_id
+           JOIN teams ta ON ta.team_id = m.away_id
+           WHERE m.goals_home IS NOT NULL AND m.goals_away IS NOT NULL
+                 AND m.date >= ?"""
+    df = pd.read_sql_query(q, con, params=[since])
+    con.close()
+    # progol.db stores tz-aware timestamps; martj42 is tz-naive. Normalise to
+    # naive so both datasets compare against pd.Timestamp the same way.
+    df["date"] = pd.to_datetime(df["date"], utc=True).dt.tz_localize(None)
+    df["home_score"] = df["home_score"].astype(int)
+    df["away_score"] = df["away_score"].astype(int)
+    df["neutral"] = False  # club league play; neutral-site cup finals are rare
+    cnt = pd.concat([df.home_team, df.away_team]).value_counts()
+    keep = set(cnt[cnt >= min_matches].index)
+    return df[df.home_team.isin(keep) & df.away_team.isin(keep)].reset_index(drop=True)
+
+
+def blend_matrices(matrices, weights=None) -> np.ndarray:
+    """Weighted average of score matrices, renormalised. The meta-ensemble:
+    averaging DC and XGBoost score maps usually beats either alone."""
+    Ms = [np.asarray(M, dtype=float) for M in matrices]
+    if weights is None:
+        weights = [1.0 / len(Ms)] * len(Ms)
+    M = sum(w * Mi for w, Mi in zip(weights, Ms))
+    return M / M.sum()
+
+
+def _holdout_probs(df, test_since, since):
+    """Train both backends on [since, test_since) and return the per-match 1X2
+    probability vectors (DC, XGB) + actual outcomes for matches on/after the
+    cutoff. Shared by evaluate() and tune_blend_weight()."""
     cutoff = pd.Timestamp(test_since)
     dc = fit_dixon_coles(df, cutoff=cutoff, since=since)
     xgb = fit_goal_regressors(df, dc=dc, cutoff=cutoff, since=since)
     known = dc["idx"]
     test = df[(df["date"] >= cutoff) & df["home_team"].isin(known) & df["away_team"].isin(known)]
-
-    stats = {"dc": [0, 0.0], "xgb": [0, 0.0]}  # [correct, logloss_sum]
-    n = 0
+    actuals, p_dc, p_xgb = [], [], []
     for r in test.itertuples():
-        actual = 0 if r.home_score > r.away_score else (1 if r.home_score == r.away_score else 2)
-        for tag, M in (("dc", score_matrix(dc, r.home_team, r.away_team, neutral=bool(r.neutral))),
-                       ("xgb", score_matrix_xgb(xgb, r.home_team, r.away_team, neutral=bool(r.neutral)))):
-            probs = list(outcome_probs(M))
-            if int(np.argmax(probs)) == actual:
-                stats[tag][0] += 1
-            stats[tag][1] += -np.log(max(probs[actual], 1e-9))
-        n += 1
-    out = {"n_test": n}
-    for tag in ("dc", "xgb"):
-        out[tag] = {"accuracy": stats[tag][0] / n if n else 0.0,
-                    "log_loss": stats[tag][1] / n if n else 0.0}
-    return out
+        actuals.append(0 if r.home_score > r.away_score else (1 if r.home_score == r.away_score else 2))
+        p_dc.append(outcome_probs(score_matrix(dc, r.home_team, r.away_team, neutral=bool(r.neutral))))
+        p_xgb.append(outcome_probs(score_matrix_xgb(xgb, r.home_team, r.away_team, neutral=bool(r.neutral))))
+    return np.array(actuals), np.array(p_dc), np.array(p_xgb)
+
+
+def _prob_metrics(probs: np.ndarray, actuals: np.ndarray) -> dict:
+    if len(actuals) == 0:
+        return {"accuracy": 0.0, "log_loss": 0.0}
+    pick = probs.argmax(axis=1)
+    chosen = probs[np.arange(len(actuals)), actuals]
+    return {"accuracy": float((pick == actuals).mean()),
+            "log_loss": float(-np.log(np.clip(chosen, 1e-9, None)).mean())}
+
+
+def evaluate(df: pd.DataFrame, test_since: str, since: str = _DEFAULT_SINCE,
+             blend_weight: float = 0.5) -> dict:
+    """Temporal holdout: train DC + XGBoost on matches before test_since, then
+    report 1X2 accuracy + log-loss for each backend AND their blend (the
+    meta-ensemble) on matches from test_since on."""
+    actuals, p_dc, p_xgb = _holdout_probs(df, test_since, since)
+    p_blend = blend_weight * p_dc + (1 - blend_weight) * p_xgb
+    p_blend = p_blend / p_blend.sum(axis=1, keepdims=True) if len(actuals) else p_blend
+    return {"n_test": int(len(actuals)), "blend_weight": blend_weight,
+            "dc": _prob_metrics(p_dc, actuals),
+            "xgb": _prob_metrics(p_xgb, actuals),
+            "blend": _prob_metrics(p_blend, actuals)}
+
+
+def tune_blend_weight(df: pd.DataFrame, test_since: str, since: str = _DEFAULT_SINCE,
+                      grid: int = 21) -> dict:
+    """Grid-search the DC weight in the DC/XGB blend that minimises holdout
+    log-loss. weight=1 -> pure DC, weight=0 -> pure XGB."""
+    actuals, p_dc, p_xgb = _holdout_probs(df, test_since, since)
+    best = {"weight": 0.5, "log_loss": float("inf")}
+    for w in np.linspace(0.0, 1.0, grid):
+        p = w * p_dc + (1 - w) * p_xgb
+        p = p / p.sum(axis=1, keepdims=True)
+        ll = _prob_metrics(p, actuals)["log_loss"]
+        if ll < best["log_loss"]:
+            best = {"weight": float(round(w, 3)), "log_loss": ll}
+    return best
 
 
 def save_model(model: dict, path) -> None:

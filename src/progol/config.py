@@ -35,6 +35,10 @@ INTL_RESULTS_URL = "https://raw.githubusercontent.com/martj42/international_resu
 INTL_RESULTS_PATH = DATA_DIR / "international_results.csv"
 SCORE_MAPS_DIR = REPORT_DIR / "score_maps"
 SCORE_REPORT_PDF = REPORT_DIR / "score_report.pdf"
+# Cached club score model (Dixon-Coles fit on ~600 clubs is slow ~2min); refit
+# weekly, loaded by the report so per-run cost is near zero.
+SCORE_CLUB_MODEL = MODEL_DIR / "score_club.pkl"
+SCORE_CLUB_MAX_AGE_DAYS = 7
 
 # venue (stadium name) is ~99% redundant with home_team_id since each club
 # plays home games at one stadium. Switching to home_id lets TargetEncoder

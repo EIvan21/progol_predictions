@@ -88,12 +88,28 @@ def test_xgb_save_load_roundtrip(fitted_xgb, tmp_path):
     assert np.allclose(a, b)
 
 
-def test_evaluate_reports_both_backends(intl_df):
+def test_evaluate_reports_all_backends(intl_df):
     res = sm.evaluate(intl_df, test_since="2021-06-01", since="2019-01-01")
     assert res["n_test"] > 0
-    for tag in ("dc", "xgb"):
+    for tag in ("dc", "xgb", "blend"):
         assert 0.0 <= res[tag]["accuracy"] <= 1.0
         assert res[tag]["log_loss"] > 0
+
+
+def test_blend_matrices_is_distribution(fitted_model, fitted_xgb):
+    a = sm.score_matrix(fitted_model, "STRONG", "WEAK", neutral=True)
+    b = sm.score_matrix_xgb(fitted_xgb, "STRONG", "WEAK", neutral=True)
+    M = sm.blend_matrices([a, b])
+    assert M.sum() == pytest.approx(1.0)
+    # Blend lies between the two component win-probabilities.
+    pa = sm.outcome_probs(a)[0]; pb = sm.outcome_probs(b)[0]
+    assert min(pa, pb) - 1e-9 <= sm.outcome_probs(M)[0] <= max(pa, pb) + 1e-9
+
+
+def test_tune_blend_weight_in_range(intl_df):
+    best = sm.tune_blend_weight(intl_df, test_since="2021-06-01", since="2019-01-01")
+    assert 0.0 <= best["weight"] <= 1.0
+    assert best["log_loss"] > 0
 
 
 def test_score_eval_appends_history(intl_df, tmp_path):
