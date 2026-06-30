@@ -352,6 +352,10 @@ async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ctx.user_data so the state handler doesn't have to re-load.
 
 AWAIT_BUDGET = 1
+# Neutral 1X2 prior for fixtures that haven't resolved yet (e.g. not in the
+# API window). Mirrors predict.DEFAULT_SLOT_PRIOR so /presupuesto can optimize
+# a partial slate; unresolved games surface as triples (lowest confidence).
+DEFAULT_SLOT_PRIOR = (0.45, 0.25, 0.30)
 
 
 async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -362,14 +366,14 @@ async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
     main_games = sorted(games, key=lambda g: g['game_number'])[:14]
     probs_list = []
+    unresolved = []
     for g in main_games:
         p = _decode_probs(g.get('predicted_probs'))
         if not p:
-            await update.message.reply_text(
-                f"Faltan predicciones en el concurso {concurso} "
-                f"(juego {g['game_number']}). Corre /predecir_progol primero."
-            )
-            return ConversationHandler.END
+            # Fixture not in the API yet (e.g. a league still on break). Use the
+            # neutral prior instead of bailing so the optimizer can still run.
+            p = list(DEFAULT_SLOT_PRIOR)
+            unresolved.append(g['game_number'])
         probs_list.append(p)
     if len(probs_list) < 14:
         await update.message.reply_text(
@@ -380,8 +384,12 @@ async def cmd_presupuesto(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ctx.user_data['budget_concurso'] = concurso
     ctx.user_data['budget_probs'] = probs_list
     ctx.user_data['budget_games'] = main_games
+    note = ""
+    if unresolved:
+        note = (f"\n⚠️ {len(unresolved)} juego(s) sin resolver "
+                f"({', '.join(map(str, unresolved))}) usan prior neutral.")
     await update.message.reply_text(
-        f"<b>Concurso {concurso}</b> cargado.\n"
+        f"<b>Concurso {concurso}</b> cargado.{note}\n"
         f"¿Cuál es tu presupuesto en MXN? (mínimo {int(BASE_COST_MXN)})\n"
         f"Manda /cancelar para abortar.",
         parse_mode='HTML',
