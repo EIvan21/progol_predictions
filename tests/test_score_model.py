@@ -6,7 +6,7 @@ from src.progol.modeling import score_model as sm
 
 
 @pytest.fixture
-def fitted_model():
+def intl_df():
     # Synthetic international history: STRONG beats everyone, WEAK loses.
     rng = np.random.default_rng(0)
     teams = ["STRONG", "MID1", "MID2", "WEAK"]
@@ -21,7 +21,17 @@ def fitted_model():
             "away_score": int(rng.poisson(base_gf[a])),
             "neutral": False,
         })
-    return sm.fit_dixon_coles(pd.DataFrame(rows), half_life=3650)
+    return pd.DataFrame(rows)
+
+
+@pytest.fixture
+def fitted_model(intl_df):
+    return sm.fit_dixon_coles(intl_df, half_life=3650, since="2019-01-01")
+
+
+@pytest.fixture
+def fitted_xgb(intl_df):
+    return sm.fit_goal_regressors(intl_df, since="2019-01-01")
 
 
 def test_score_matrix_is_a_distribution(fitted_model):
@@ -54,3 +64,33 @@ def test_resolve_team_uses_name_map(fitted_model):
     # Exact + fuzzy fall through to None for genuine unknowns.
     assert sm.resolve_team("STRONG", fitted_model) == "STRONG"
     assert sm.resolve_team("Atlantis", fitted_model) is None
+
+
+def test_xgb_matrix_is_a_distribution(fitted_xgb):
+    M = sm.score_matrix_xgb(fitted_xgb, "STRONG", "WEAK", neutral=True)
+    assert M.shape == (7, 7)
+    assert M.min() >= 0
+    assert M.sum() == pytest.approx(1.0)
+
+
+def test_xgb_favourite_beats_underdog(fitted_xgb):
+    M = sm.score_matrix_xgb(fitted_xgb, "STRONG", "WEAK", neutral=True)
+    pH, _, pA = sm.outcome_probs(M)
+    assert pH > pA
+
+
+def test_xgb_save_load_roundtrip(fitted_xgb, tmp_path):
+    path = tmp_path / "score_model.pkl"
+    sm.save_model(fitted_xgb, path)
+    loaded = sm.load_model(path)
+    a = sm.score_matrix_xgb(fitted_xgb, "STRONG", "WEAK")
+    b = sm.score_matrix_xgb(loaded, "STRONG", "WEAK")
+    assert np.allclose(a, b)
+
+
+def test_evaluate_reports_both_backends(intl_df):
+    res = sm.evaluate(intl_df, test_since="2021-06-01", since="2019-01-01")
+    assert res["n_test"] > 0
+    for tag in ("dc", "xgb"):
+        assert 0.0 <= res[tag]["accuracy"] <= 1.0
+        assert res[tag]["log_loss"] > 0
