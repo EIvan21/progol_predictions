@@ -40,10 +40,14 @@ PROGOL_BUDGET="$(curl -fsS -H 'Metadata-Flavor: Google' http://metadata.google.i
 apt-get update -y
 apt-get install -y python3 python3-venv python3-pip git curl
 
+git config --system --add safe.directory "$WORK_DIR" || true
 if [ ! -d "$WORK_DIR/.git" ]; then
   git clone "$REPO_URL" "$WORK_DIR"
 else
-  git -C "$WORK_DIR" pull --ff-only
+  # reset --hard (not pull --ff-only): a force-pushed / rewritten remote history
+  # can't fast-forward and would abort the boot under `set -e`.
+  git -C "$WORK_DIR" fetch origin
+  git -C "$WORK_DIR" reset --hard origin/master
 fi
 
 cd "$WORK_DIR"
