@@ -60,6 +60,11 @@ pip install -r requirements.txt
 mkdir -p data data/processed models reports logs
 
 gsutil cp "gs://$BUCKET/secrets/.env" .env || echo "no secrets/.env in bucket"
+# The .env is often uploaded from Windows (CRLF). Sourcing it below with
+# `. ./.env` would leave a trailing \r on every value; python-dotenv then
+# won't override the already-set (tainted) env vars, so the API key and
+# Telegram token silently fail (0 fixtures / Telegram 404). Strip CR first.
+[ -f .env ] && sed -i 's/\r$//' .env
 # python-dotenv reads .env from inside each module, but the bash gating below
 # (Telegram notify) needs the vars in the shell environment too. Source it.
 if [ -f .env ]; then
