@@ -49,6 +49,7 @@ NICKNAME_MAP = {
     # Russian Premier League: site uses club-only; API uses "<club> Moscow" etc.
     "CSKA": "CSKA MOSCOW", "LOKOMOTIV": "LOKOMOTIV MOSCOW",
     "SPARTAK": "SPARTAK MOSCOW", "KRASNODAR": "FC KRASNODAR",
+    "ZENIT": "ZENIT ST. PETERSBURG",
     # Chilean Primera: quinielaposible.com uses short-form university names.
     "U. CATOLICA": "UNIVERSIDAD CATOLICA", "U. DE CHILE": "UNIVERSIDAD DE CHILE",
     # J-League (Japan): site truncates to ~11 chars.
@@ -207,6 +208,9 @@ def get_upcoming_api_fixtures(days_back=3, days_forward=12):
         10,   # Friendlies (international)
         1,    # FIFA World Cup — national-team slates (e.g. concurso 2339)
         # Additional domestic leagues that appear in Progol slates
+        103,  # Norway Eliteserien
+        268,  # Uruguay Primera División
+        242,  # Ecuador Liga Pro
         72,   # Brazil Serie B
         113,  # Swedish Allsvenskan
         114,  # Swedish Superettan
