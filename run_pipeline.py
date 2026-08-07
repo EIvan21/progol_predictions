@@ -73,6 +73,7 @@ def main():
         ("src.progol.modeling.predict", "Final predictions", None, True),
         ("src.progol.reporting.score_report", "Generating exact-score maps", None, False),
         ("src.progol.reporting.score_eval", "Tracking score-model accuracy", None, False),
+        ("src.progol.reporting.performance", "Settling results + performance eval", None, False),
     ]
 
     for module, desc, args, required in steps:

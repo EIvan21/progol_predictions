@@ -110,6 +110,9 @@ python -m src.progol.modeling.predict || echo "prediction step failed"
 # settle_concurso_actuals() to backfill actual_label from finished matches.
 # Non-fatal so a malformed concurso row can't block the GCS upload.
 python -m src.progol.reporting.progol_history --csv reports/progol_history.csv || echo "progol history skipped"
+# Settle actual results from API-Football (source of truth) into the DB and log
+# how the model did vs baselines — powers the bot's /rendimiento command.
+python -m src.progol.reporting.performance || echo "performance eval skipped"
 
 # Notify via Telegram. Non-fatal: a Telegram outage shouldn't fail the run
 # or block the GCS uploads in the EXIT trap.

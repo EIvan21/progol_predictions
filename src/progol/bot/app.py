@@ -64,6 +64,7 @@ HELP_TEXT = (
     "\n<b>Análisis</b>\n"
     "/presupuesto — plan óptimo de dobles/triples para tu presupuesto\n"
     "/marcadores — mapas de marcador exacto (heatmap) del concurso actual\n"
+    "/rendimiento — qué tan bien predice el modelo vs resultados reales\n"
     "/historial — hits/14 + revancha de los últimos 8 concursos\n"
     "/cancelar — aborta una conversación en curso\n"
     "\n<b>Cuenta</b>\n"
@@ -301,6 +302,29 @@ async def cmd_marcadores(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_photo(f, caption=png.stem.replace("_", " "))
         except Exception as exc:
             logger.warning(f"send score map {png.name} failed: {exc}")
+
+
+async def cmd_rendimiento(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    """How the model is really doing: last concursos' predictions vs the actual
+    results (from API-Football), 14 main + revancha separate, vs baseline, and
+    where the last concurso failed."""
+    await update.message.reply_text("Evaluando rendimiento contra resultados reales...")
+    _gcs_sync()
+    n = 6
+    if ctx.args:
+        try:
+            n = max(1, min(12, int(ctx.args[0])))
+        except ValueError:
+            pass
+    # Lazy import: keeps the module graph clean for the slim bot.
+    from src.progol.reporting.performance import render_telegram
+    try:
+        msg = render_telegram(n=n)
+    except Exception as exc:
+        logger.warning(f"rendimiento failed: {exc}")
+        await update.message.reply_text("No pude calcular el rendimiento ahora.")
+        return
+    await update.message.reply_text(msg, parse_mode='HTML')
 
 
 async def cmd_predecir_partido(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -547,6 +571,7 @@ def main():
     app.add_handler(CommandHandler('predecir_partido', user_g(cmd_predecir_partido)))
     app.add_handler(CommandHandler('historial', user_g(cmd_historial)))
     app.add_handler(CommandHandler('marcadores', user_g(cmd_marcadores)))
+    app.add_handler(CommandHandler('rendimiento', user_g(cmd_rendimiento)))
 
     # /presupuesto conversation. Entry is guarded; the state handler doesn't
     # need its own guard since it's only reachable after entry succeeds.
