@@ -206,6 +206,8 @@ def get_upcoming_api_fixtures(days_back=3, days_forward=12):
         # CONCACAF / International
         16,   # CONCACAF Champions Cup (Concachampions)
         10,   # Friendlies (international)
+        772,  # Leagues Cup (Liga MX vs MLS)
+        667,  # Club Friendlies (preseason: Juventus, Chelsea, etc.)
         1,    # FIFA World Cup — national-team slates (e.g. concurso 2339)
         # Additional domestic leagues that appear in Progol slates
         103,  # Norway Eliteserien
