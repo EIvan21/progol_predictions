@@ -81,20 +81,45 @@ def _injuries_from_api(fixture_id: int, home_id: int, away_id: int, session):
         return 0, 0
 
 
+# Sharp books whose 1X2 lines we average into a consensus. Sharper books price
+# draws better than our model, which is the whole point of leaning on them.
+_SHARP_BOOKS = {"Pinnacle", "Bet365", "William Hill", "Marathonbet", "1xBet"}
+
+
+def _devig_1x2(values):
+    """Devig a Match Winner market into (pH, pD, pA) summing to 1, or None."""
+    d = {v["value"]: 1.0 / float(v["odd"]) for v in values if v.get("odd")}
+    raw = [d.get("Home"), d.get("Draw"), d.get("Away")]
+    if any(x is None for x in raw):
+        return None
+    s = sum(raw)
+    return (raw[0] / s, raw[1] / s, raw[2] / s)
+
+
 def _market_probs_from_api(fixture_id: int, session):
-    """Returns (probs, has_market). probs sums to 1.0 — devigged from bookmaker
-    overround. has_market=False means the API returned nothing and probs is the
-    generic 1X2 prior; callers should NOT blend that into the model output."""
+    """Consensus devigged 1X2 probabilities averaged across sharp bookmakers.
+    Returns (probs, has_market); has_market=False means no odds were available
+    and probs is the generic prior (callers must not blend that)."""
     try:
-        res = session.get(f"{API_BASE}/odds?fixture={fixture_id}&bookmaker=8",
-                          timeout=20).json().get('response', [])
-        if res and res[0].get('bookmakers'):
-            bets = res[0]['bookmakers'][0]['bets'][0]['values']
-            raw_h = 1 / float(bets[0]['odd'])
-            raw_d = 1 / float(bets[1]['odd'])
-            raw_a = 1 / float(bets[2]['odd'])
-            overround = raw_h + raw_d + raw_a
-            return (raw_h / overround, raw_d / overround, raw_a / overround), True
+        res = session.get(f"{API_BASE}/odds?fixture={fixture_id}",
+                          timeout=20).json().get("response", [])
+        if res and res[0].get("bookmakers"):
+            books = res[0]["bookmakers"]
+            probs_list = []
+            for prefer_sharp in (True, False):  # sharp consensus, else any book
+                for bm in books:
+                    if prefer_sharp and bm.get("name") not in _SHARP_BOOKS:
+                        continue
+                    mw = next((b for b in bm["bets"] if b["name"] == "Match Winner"), None)
+                    if mw:
+                        p = _devig_1x2(mw["values"])
+                        if p:
+                            probs_list.append(p)
+                if probs_list:
+                    break
+            if probs_list:
+                m = np.mean(probs_list, axis=0)
+                return (float(m[0]), float(m[1]), float(m[2])), True
     except Exception as e:
         logger.warning("odds_fetch_failed", extra={'fixture_id': fixture_id, 'err': str(e)})
     return (0.45, 0.25, 0.30), False
@@ -318,10 +343,12 @@ def predict_progol(match_ids, slate_meta=None, game_numbers=None):
             model_probs = _apply_post_calibration(model_probs, temperature, dirichlet_cal)
 
             if has_market:
-                # Per-league blend weight (Batch D). Falls back to default
-                # if the league isn't in the override map.
+                # Market-led (Phase 2A): lead with the odds consensus, model
+                # adjusts. Env override wins; else the market-led model weight
+                # (or the old per-league weight if MARKET_LED is off).
                 blend_w = (blend_w_global if blend_w_global is not None
-                           else config.market_blend_for(league_id))
+                           else (config.MODEL_WEIGHT_MARKET_LED if config.MARKET_LED
+                                 else config.market_blend_for(league_id)))
                 blended = blend_w * model_probs + (1.0 - blend_w) * np.array(market_probs)
                 probs = blended / blended.sum()
             else:

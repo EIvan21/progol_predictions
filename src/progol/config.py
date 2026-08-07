@@ -81,6 +81,12 @@ FEATURE_COLS = [
     'injuries_diff',
 ]
 MODEL_MARKET_BLEND_DEFAULT = 0.6
+# Market-led inference (Phase 2A): when odds are available, lead with the market
+# consensus (which prices draws far better than our ~47% model) and use the
+# model only as an adjustment. This is the MODEL weight; market weight = 1-it.
+# Tunable via the MODEL_MARKET_BLEND env override; measured weekly by /rendimiento.
+MARKET_LED = True
+MODEL_WEIGHT_MARKET_LED = 0.25
 # Per-league override of the model/market blend weight (model weight; market
 # weight is 1-blend). Sharper markets => trust market more (lower blend); thin
 # / opaque markets => trust model more (higher blend). Default 0.60 applies to
